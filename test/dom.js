@@ -192,9 +192,45 @@ const G = name => window.eval(name);
   }
   check('no features left', document.querySelectorAll('#feature-list tbody tr').length === 0);
   check('suggestions appear', $('suggest-card').style.display !== 'none' && document.querySelectorAll('#suggest-list button').length >= 2);
-  document.querySelector('#suggest-list button').click();
+  document.querySelector('#suggest-list button[data-act="show"]').click();
+  await sleep(100);
+  check('suggestion zooms the map', $('map-main')._clView && $('map-main')._clView.k > 1, JSON.stringify($('map-main')._clView));
+  document.querySelector('#suggest-list button[data-act="add"]').click();
   await sleep(250);
   check('suggestion accepted', document.querySelectorAll('#feature-list tbody tr').length === 1);
+
+  section('Map zoom and pan');
+  const mapEl = $('map-main');
+  const view = () => mapEl._clView || { k: 1, tx: 0, ty: 0 };
+  $('map-zoom-fit').click();
+  await sleep(50);
+  check('fit resets the view', view().k === 1 && $('map-zoom-fit').disabled);
+  mapEl.dispatchEvent(new window.WheelEvent('wheel', { deltaY: -300, clientX: 450, clientY: 220, bubbles: true, cancelable: true }));
+  await sleep(80);
+  const k1 = view().k;
+  check('wheel zooms in', k1 > 1, 'k=' + k1.toFixed(2));
+  check('fit button enabled when zoomed', !$('map-zoom-fit').disabled);
+  $('map-zoom-in').click();
+  await sleep(80);
+  check('zoom-in button zooms further', view().k > k1, 'k=' + view().k.toFixed(2));
+  // Dragging pans, and the click that ends a drag must not place a point.
+  $('add-feature').click();
+  await sleep(50);
+  const before = document.querySelectorAll('#feature-list tbody tr').length;
+  const txBefore = view().tx;
+  const mev = (type, x, y) => mapEl.dispatchEvent(new window.MouseEvent(type, { clientX: x, clientY: y, button: 0, bubbles: true }));
+  mev('pointerdown', 300, 200); mev('pointermove', 330, 210); mev('pointermove', 360, 230); mev('pointerup', 360, 230); mev('click', 360, 230);
+  await sleep(80);
+  check('drag pans the view', view().tx !== txBefore, txBefore.toFixed(0) + ' → ' + view().tx.toFixed(0));
+  check('drag does not place a point', document.querySelectorAll('#feature-list tbody tr').length === before && $('pick-hint').textContent.includes('starts'));
+  $('add-feature').click();   // cancel placing
+  await sleep(50);
+  document.querySelector('#feature-list [data-act="show"]').click();
+  await sleep(100);
+  check('show-on-map zooms to the feature', view().k > 1);
+  $('map-zoom-fit').click();
+  await sleep(50);
+  check('no errors zooming', errors.length === 0, errors.join(' | ').slice(0, 300));
 
   section('Start line and rail');
   $('pick-start').click();

@@ -565,6 +565,9 @@
       recompute();
     });
     $('copy-features').addEventListener('click', () => copyFeaturesPrompt());
+    $('map-zoom-in').addEventListener('click', () => Charts.courseMapZoom($('map-main'), 1.8));
+    $('map-zoom-out').addEventListener('click', () => Charts.courseMapZoom($('map-main'), 1 / 1.8));
+    $('map-zoom-fit').addEventListener('click', () => Charts.courseMapZoom($('map-main'), 0));
     document.addEventListener('keydown', e => {
       if (e.key === 'Escape' && state.picking) { state.picking = null; renderCoursePanel(); }
     });
@@ -1032,6 +1035,11 @@
     }
   }
 
+  function scrollToMap() {
+    const el = $('map-main');
+    if (el.scrollIntoView) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+
   function renderCoursePanel() {
     const entry = current();
     if (!entry || !entry.A) return;
@@ -1044,6 +1052,12 @@
       onPick: pk ? hit => onMapPick(entry, hit) : null,
       pending: pk && pk.what === 'feature' ? pk.entry : null,
       activeFeature: state.activeFeature,
+      viewKey: entry.id,
+      onView: v => {
+        $('map-zoom-fit').disabled = v.k <= 1;
+        $('map-zoom-in').disabled = v.k >= 24;
+        $('map-zoom-out').disabled = v.k <= 1;
+      },
     });
 
     $('add-feature').textContent = pk && pk.what === 'feature' ? 'Cancel placing' : 'Place a feature';
@@ -1105,8 +1119,9 @@
       const nudge = end => '<span class="nudge"><button class="btn btn-sm" data-fid="' + f.id + '" data-act="nudge" data-end="' + end + '" data-m="-6" title="6 m earlier">−</button>' +
         '<button class="btn btn-sm" data-fid="' + f.id + '" data-act="nudge" data-end="' + end + '" data-m="6" title="6 m later">+</button></span>';
       const status = f.offCourse ? '<span class="tag tag-warm">off the course</span>' : f.wraps ? '<span class="tag tag-mid">crosses the line</span>' : '';
+      const show = f.j0 >= 0 ? '<button class="btn btn-sm btn-show" data-fid="' + f.id + '" data-act="show" title="Zoom the map to this feature">&#x1F50D;&#xFE0E;</button>' : '';
       return '<tr' + (f.id === state.activeFeature ? ' class="active"' : '') + '>' +
-        '<td><span class="pin-key" style="background:' + f.color + '">' + (k + 1) + '</span></td>' +
+        '<td><span class="pin-key" style="background:' + f.color + '">' + (k + 1) + '</span>' + show + '</td>' +
         '<td><input type="text" value="' + Charts.esc(f.label) + '" data-fid="' + f.id + '" data-act="label" style="width:130px"></td>' +
         '<td>' + typeSel + '</td>' +
         '<td class="dim">' + (f.j0 >= 0 ? Charts.fmtKm(A.meanLap.s[f.j0]) + ' km' : '—') + ' ' + nudge('entry') + '</td>' +
@@ -1121,6 +1136,14 @@
     el.querySelectorAll('[data-act="type"]').forEach(s => s.addEventListener('change', () => updateFeature(entry, s.dataset.fid, { type: s.value })));
     el.querySelectorAll('[data-act="nudge"]').forEach(b => b.addEventListener('click', () => nudgeFeature(entry, b.dataset.fid, b.dataset.end, parseFloat(b.dataset.m))));
     el.querySelectorAll('[data-act="remove"]').forEach(b => b.addEventListener('click', () => removeFeature(entry, b.dataset.fid)));
+    el.querySelectorAll('[data-act="show"]').forEach(b => b.addEventListener('click', () => {
+      const f = feats.find(x => x.id === b.dataset.fid);
+      if (!f) return;
+      state.activeFeature = f.id;
+      renderCoursePanel();
+      Charts.courseMapZoomTo($('map-main'), f.j0, f.j1);
+      scrollToMap();
+    }));
     el.querySelectorAll('tbody tr').forEach((tr, k) => tr.addEventListener('click', e => {
       if (e.target.closest('button,input,select')) return;
       state.activeFeature = feats[k].id;
@@ -1141,9 +1164,15 @@
         '<td>' + (s.medianV * 3.6).toFixed(1) + ' km/h</td>' +
         '<td>' + (s.grade * 100).toFixed(0) + '%</td>' +
         '<td>' + (isFinite(s.noCadShare) ? Math.round(s.noCadShare * 100) + '%' : '—') + '</td>' +
-        '<td><button class="btn btn-sm btn-primary" data-k="' + k + '">Add</button></td></tr>').join('') +
+        '<td><button class="btn btn-sm" data-k="' + k + '" data-act="show" title="Zoom the map to it">&#x1F50D;&#xFE0E;</button> ' +
+        '<button class="btn btn-sm btn-primary" data-k="' + k + '" data-act="add">Add</button></td></tr>').join('') +
       '</tbody></table>';
-    $('suggest-list').querySelectorAll('button').forEach(b => b.addEventListener('click', () => addSuggested(entry, sg[parseInt(b.dataset.k, 10)])));
+    $('suggest-list').querySelectorAll('button[data-act="add"]').forEach(b => b.addEventListener('click', () => addSuggested(entry, sg[parseInt(b.dataset.k, 10)])));
+    $('suggest-list').querySelectorAll('button[data-act="show"]').forEach(b => b.addEventListener('click', () => {
+      const s = sg[parseInt(b.dataset.k, 10)];
+      Charts.courseMapZoomTo($('map-main'), s.j0, s.j1);
+      scrollToMap();
+    }));
   }
 
   function renderBobbles(A) {

@@ -283,6 +283,7 @@ const Charts = (() => {
     if (canvas._clLeave) canvas.removeEventListener('pointerleave', canvas._clLeave);
 
     const move = ev => {
+      if (canvas._clDragging) { tip.style.display = 'none'; return; }
       const r = canvas.getBoundingClientRect();
       const px = ev.clientX - r.left, py = ev.clientY - r.top;
       const html = handler(px, py);
@@ -322,7 +323,12 @@ const Charts = (() => {
 
   // ── Map projection and basemap ────────────────────────────────────────────
 
-  function projector(P, w, h, pad, i0 = 0, i1 = null) {
+  /**
+   * Fit the track into the canvas, then apply an optional view transform
+   * `{ k, tx, ty }` (zoom factor and pixel offset) on top of the fit. Stroke
+   * widths and pins stay in CSS pixels; only positions scale.
+   */
+  function projector(P, w, h, pad, i0 = 0, i1 = null, view = null) {
     const end = i1 == null ? P.n - 1 : i1;
     let mnLat = Infinity, mxLat = -Infinity, mnLon = Infinity, mxLon = -Infinity;
     for (let i = i0; i <= end; i++) {
@@ -336,10 +342,145 @@ const Charts = (() => {
     const sw = Math.max(1e-9, (mxLon - mnLon) * ar), sh = Math.max(1e-9, mxLat - mnLat);
     const s = Math.min((w - 2 * pad) / sw, (h - 2 * pad) / sh);
     const ox = (w - sw * s) / 2, oy = (h - sh * s) / 2;
-    const f = i => [ox + (P.lon[i] - mnLon) * ar * s, h - (oy + (P.lat[i] - mnLat) * s)];
-    f.point = (la, lo) => [ox + (lo - mnLon) * ar * s, h - (oy + (la - mnLat) * s)];
-    f.metresPerPx = 1 / (s / 111320);
+    const k = view ? view.k : 1, tx = view ? view.tx : 0, ty = view ? view.ty : 0;
+    const f = i => [(ox + (P.lon[i] - mnLon) * ar * s) * k + tx, (h - (oy + (P.lat[i] - mnLat) * s)) * k + ty];
+    f.point = (la, lo) => [(ox + (lo - mnLon) * ar * s) * k + tx, (h - (oy + (la - mnLat) * s)) * k + ty];
+    f.metresPerPx = 111320 / (s * k);
+    f.k = k;
     return f;
+  }
+
+  // ── Map view: zoom and pan ────────────────────────────────────────────────
+
+  const VIEW_MAX = 24;
+
+  function viewOf(canvas) {
+    return canvas._clView || { k: 1, tx: 0, ty: 0 };
+  }
+
+  /** Zoom the view by `z` about the canvas point (px, py). */
+  function zoomView(v, z, px, py) {
+    let k = Math.min(VIEW_MAX, Math.max(1, v.k * z));
+    z = k / v.k;
+    if (k <= 1.0001) return { k: 1, tx: 0, ty: 0 };
+    return { k, tx: px - (px - v.tx) * z, ty: py - (py - v.ty) * z };
+  }
+
+  /** Keep at least a sliver of the fitted track on screen. */
+  function clampView(v, w, h) {
+    if (v.k <= 1) return { k: 1, tx: 0, ty: 0 };
+    const m = 40;
+    return {
+      k: v.k,
+      tx: Math.min(w - m, Math.max(m - w * v.k, v.tx)),
+      ty: Math.min(h - m, Math.max(m - h * v.k, v.ty)),
+    };
+  }
+
+  /**
+   * Zoom the course map by `factor` about its centre; 0 resets to the fit.
+   * Redraws with whatever the last courseMap call was given.
+   */
+  function courseMapZoom(canvas, factor) {
+    const ctx = canvas._clMapCtx;
+    if (!ctx) return;
+    const w = canvas.clientWidth || canvas.width, h = parseFloat(canvas.style.height) || canvas.height;
+    canvas._clView = factor ? clampView(zoomView(viewOf(canvas), factor, w / 2, h / 2), w, h) : { k: 1, tx: 0, ty: 0 };
+    courseMap(canvas, ctx.P, ctx.A, ctx.opts);
+  }
+
+  /** Zoom so the mean-lap span j0..j1 fills about a third of the map. */
+  function courseMapZoomTo(canvas, j0, j1) {
+    const ctx = canvas._clMapCtx;
+    if (!ctx || !ctx.A.meanLap) return;
+    const ml = ctx.A.meanLap;
+    const w = canvas.clientWidth || canvas.width, h = parseFloat(canvas.style.height) || canvas.height;
+    const base = projector(ctx.P, w, h, 28);
+    if (!base) return;
+    const span = (j1 - j0 + ml.n) % ml.n;
+    let mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity;
+    for (let d = 0; d <= span; d++) {
+      const j = (j0 + d) % ml.n;
+      const [x, y] = base.point(ml.lat[j], ml.lon[j]);
+      if (x < mnx) mnx = x; if (x > mxx) mxx = x; if (y < mny) mny = y; if (y > mxy) mxy = y;
+    }
+    const ext = Math.max(mxx - mnx, mxy - mny, 10);
+    const k = Math.min(VIEW_MAX, Math.max(1, (Math.min(w, h) / 3) / ext));
+    const cx = (mnx + mxx) / 2, cy = (mny + mxy) / 2;
+    canvas._clView = clampView({ k, tx: w / 2 - cx * k, ty: h / 2 - cy * k }, w, h);
+    courseMap(canvas, ctx.P, ctx.A, ctx.opts);
+  }
+
+  /** Wheel to zoom about the cursor, drag to pan. Bound once per canvas. */
+  function bindMapView(canvas) {
+    if (canvas._clViewBound) return;
+    canvas._clViewBound = true;
+    const redraw = () => {
+      const ctx = canvas._clMapCtx;
+      if (!ctx) return;
+      if (canvas._clRaf) return;
+      canvas._clRaf = requestAnimationFrame(() => { canvas._clRaf = 0; courseMap(canvas, ctx.P, ctx.A, ctx.opts); });
+    };
+    const size = () => {
+      const r = canvas.getBoundingClientRect();
+      return { r, w: r.width || canvas.clientWidth, h: r.height || parseFloat(canvas.style.height) };
+    };
+    canvas.addEventListener('wheel', ev => {
+      if (!canvas._clMapCtx) return;
+      ev.preventDefault();
+      const { r, w, h } = size();
+      const z = Math.exp(-ev.deltaY * (ev.deltaMode === 1 ? 0.05 : 0.0022));
+      canvas._clView = clampView(zoomView(viewOf(canvas), z, ev.clientX - r.left, ev.clientY - r.top), w, h);
+      redraw();
+    }, { passive: false });
+
+    let drag = null;
+    canvas.addEventListener('pointerdown', ev => {
+      if (!canvas._clMapCtx || (ev.button != null && ev.button !== 0)) return;
+      const v = viewOf(canvas);
+      drag = { x: ev.clientX, y: ev.clientY, tx: v.tx, ty: v.ty, k: v.k, moved: false };
+      canvas._clDragged = false;
+      try { canvas.setPointerCapture(ev.pointerId); } catch (_) {}
+    });
+    canvas.addEventListener('pointermove', ev => {
+      if (!drag) return;
+      const dx = ev.clientX - drag.x, dy = ev.clientY - drag.y;
+      if (!drag.moved && Math.hypot(dx, dy) < 4) return;
+      if (drag.k <= 1) return;   // nothing to pan when fitted
+      drag.moved = true;
+      canvas._clDragged = true;
+      canvas._clDragging = true;
+      const { w, h } = size();
+      canvas._clView = clampView({ k: drag.k, tx: drag.tx + dx, ty: drag.ty + dy }, w, h);
+      redraw();
+    });
+    const end = ev => {
+      if (!drag) return;
+      drag = null;
+      canvas._clDragging = false;
+      try { canvas.releasePointerCapture(ev.pointerId); } catch (_) {}
+    };
+    canvas.addEventListener('pointerup', end);
+    canvas.addEventListener('pointercancel', end);
+  }
+
+  /** A scale bar, bottom right, sized to a round number of metres. */
+  function drawScaleBar(g, w, h, metresPerPx) {
+    const target = 90;
+    const nice = [2, 5, 10, 20, 50, 100, 200, 500, 1000];
+    let m = nice[0];
+    for (const c of nice) { m = c; if (c / metresPerPx >= target * 0.6) break; }
+    const px = m / metresPerPx;
+    const x1 = w - 10, x0 = x1 - px, y = h - 10;
+    g.save();
+    g.strokeStyle = INK.text; g.lineWidth = 2; g.lineCap = 'butt';
+    g.globalAlpha = 0.85;
+    g.beginPath(); g.moveTo(x0, y); g.lineTo(x1, y); g.stroke();
+    g.beginPath(); g.moveTo(x0, y - 5); g.lineTo(x0, y); g.moveTo(x1, y - 5); g.lineTo(x1, y); g.stroke();
+    g.font = '10px system-ui, -apple-system, sans-serif';
+    g.fillStyle = INK.text; g.textAlign = 'right'; g.textBaseline = 'bottom';
+    g.fillText(m + ' m', x1, y - 4);
+    g.restore();
   }
 
   const BASEMAP = {
@@ -427,8 +568,15 @@ const Charts = (() => {
    */
   function courseMap(canvas, P, A, opts = {}) {
     const { g, w, h } = setup(canvas, opts.height || 440);
+    // The view (zoom and pan) lives on the canvas and survives redraws, but
+    // not a change of ride or of canvas size, since its offsets are pixels.
+    const key = (opts.viewKey || '') + '|' + w + 'x' + h;
+    if (canvas._clViewKey !== key) { canvas._clViewKey = key; canvas._clView = null; }
+    canvas._clMapCtx = { P, A, opts };
+    bindMapView(canvas);
+    if (opts.onView) opts.onView(viewOf(canvas));
     if (!P.lat) { emptyState(g, w, h, 'No GPS data in this ride'); return null; }
-    const pr = projector(P, w, h, 28);
+    const pr = projector(P, w, h, 28, 0, null, viewOf(canvas));
     if (!pr) { emptyState(g, w, h, 'No usable GPS points'); return null; }
     const ml = A.meanLap;
 
@@ -577,12 +725,15 @@ const Charts = (() => {
     }
 
     if (opts.osm) drawAttribution(g, w, h, opts.osm.attribution || '© OpenStreetMap contributors');
+    drawScaleBar(g, w, h, pr.metresPerPx);
 
-    // Click-to-place: returns the nearest mean-lap grid point.
+    // Click-to-place: returns the nearest mean-lap grid point. A click that
+    // ended a drag is a pan, not a pick.
     if (canvas._clPick) canvas.removeEventListener('click', canvas._clPick);
     if (opts.onPick) {
       canvas.style.cursor = 'crosshair';
       canvas._clPick = ev => {
+        if (canvas._clDragged) { canvas._clDragged = false; return; }
         const r = canvas.getBoundingClientRect();
         const px = ev.clientX - r.left, py = ev.clientY - r.top;
         const hit = nearestOnMap(P, A, pr, px, py, 30);
@@ -1300,7 +1451,7 @@ const Charts = (() => {
     SERIES, INK, DIVERGE, LAPS, lapColor,
     deltaColor, deltaLegendStops, deltaScale, speedColor,
     setup, box, scale, ticks, line, label, onHover, ttRows, projector,
-    courseMap, deltaTrace, speedTrace, lapBars, sectorHeatmap, featureBars, featureLaps,
+    courseMap, courseMapZoom, courseMapZoomTo, deltaTrace, speedTrace, lapBars, sectorHeatmap, featureBars, featureLaps,
     wbalChart, compareBars, replayFrame, cropTimeline,
     drawBasemap, drawAttribution, BASEMAP, medianSpeedAlong,
     fmtClock, fmtKm, fmt2, fmtPct, esc, shorten,

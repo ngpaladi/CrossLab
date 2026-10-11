@@ -134,14 +134,23 @@ app: true
             <button class="btn btn-sm" id="copy-features" style="display:none">Copy features from…</button>
           </div>
           <div id="pick-hint" class="status status-info" style="display:none"></div>
-          <div class="chart-wrap"><canvas class="chart" id="map-main"></canvas></div>
+          <div class="chart-wrap">
+            <canvas class="chart" id="map-main"></canvas>
+            <div class="map-zoom" id="map-zoom">
+              <button class="btn btn-sm" id="map-zoom-in" title="Zoom in">+</button>
+              <button class="btn btn-sm" id="map-zoom-out" title="Zoom out">−</button>
+              <button class="btn btn-sm" id="map-zoom-fit" title="Fit the whole course" disabled>Fit</button>
+            </div>
+          </div>
           <div class="legend" id="map-legend"></div>
           <p class="card-note">
             Pick a feature type, click <em>Place a feature</em>, then click where it
             starts on the course and where it ends. Put the entry a few metres before
             you brake for it and the exit where you are back up to speed, so the
-            approach and the remount are inside the zone. Features are saved with the
-            race, and can be copied to another race on the same course.
+            approach and the remount are inside the zone. Scroll to zoom in on the map
+            and drag to pan, so an 8&nbsp;m set of barriers is not a 3&nbsp;px click.
+            Features are saved with the race, and can be copied to another race on
+            the same course.
           </p>
         </div>
 

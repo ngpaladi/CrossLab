@@ -16,8 +16,10 @@ two share settings, the intervals.icu key, and the raw ride format.
 
 - **Place the features yourself** — two clicks on the course map per feature:
   where it starts and where you are back up to speed. Barriers, run-ups,
-  stairs, sand, mud, off-camber, corners, descents, pavement, the pit. Saved
-  with the race; copyable to another race on the same course.
+  stairs, sand, mud, off-camber, corners, descents, pavement, the pit. Scroll
+  to zoom the map and drag to pan, with a scale bar, so an 8 m set of
+  barriers is placed at 8 m. Saved with the race; copyable to another race on
+  the same course.
 - **Where the time went** — per feature: best, median and worst pass, time
   *left on the table* (how much slower each pass was than your best), *cost
   per pass* (how much longer than riding the same metres at approach speed),
