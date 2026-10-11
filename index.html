@@ -1,0 +1,448 @@
+---
+layout: default
+title: Analyze
+app: true
+---
+
+<div class="app-wrap" id="app-wrap" data-panel="analysis">
+
+  <!-- ── Races ─────────────────────────────────────────────────────────── -->
+  <aside class="sidebar">
+    <div class="sidebar-section">
+      <div class="sidebar-section-title">Load a race</div>
+      <div class="dropzone" id="dropzone">
+        Drop a <b>.fit</b> or <b>.json</b> file<br>or click to choose
+      </div>
+      <input type="file" id="file-input" accept=".fit,.FIT,.json" multiple hidden>
+      <div class="btn-row" style="margin-top:8px">
+        <button class="btn btn-sm" id="demo-btn">Load sample race</button>
+      </div>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-section-title">
+        <span>intervals.icu</span>
+        <button class="btn btn-sm" id="icu-open-settings">Key</button>
+      </div>
+      <div id="icu-panel">
+        <p class="hint" style="margin-bottom:8px">
+          Your key goes only to intervals.icu &mdash; CrossLab has no server to send it to.
+        </p>
+        <div class="field">
+          <label for="icu-from">From</label>
+          <label for="icu-to" style="text-align:right">To</label>
+          <div class="field-input" style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+            <input type="date" id="icu-from">
+            <input type="date" id="icu-to">
+          </div>
+        </div>
+        <div class="btn-row" style="margin-top:8px">
+          <button class="btn btn-sm btn-primary" id="icu-fetch">Find rides</button>
+          <button class="btn btn-sm" id="icu-range-90" title="Widen to the last 90 days">90d</button>
+          <button class="btn btn-sm" id="icu-range-season" title="The whole cross season so far">Season</button>
+        </div>
+
+        <div id="icu-filters" style="display:none;margin-top:10px">
+          <input type="text" id="icu-search" placeholder="Filter by name…" autocomplete="off">
+          <div class="chips" id="icu-chips"></div>
+        </div>
+
+        <div id="icu-results" style="margin-top:8px"></div>
+
+        <details class="icu-byid">
+          <summary>Load by ID or URL</summary>
+          <p class="hint" style="margin:6px 0">
+            For an activity that doesn't show up in the list &mdash; paste its
+            intervals.icu URL or ID.
+          </p>
+          <input type="text" id="icu-id" placeholder="i169128502 or a full URL" autocomplete="off" spellcheck="false">
+          <div class="btn-row" style="margin-top:6px">
+            <button class="btn btn-sm" id="icu-id-load">Load it</button>
+          </div>
+          <div id="icu-id-status"></div>
+        </details>
+      </div>
+    </div>
+
+    <div class="sidebar-section-title" style="padding:10px 12px 0">
+      <span>Loaded races</span>
+      <span class="hint" id="race-count"></span>
+    </div>
+    <div class="scroll-y">
+      <div class="ride-list" id="race-list">
+        <div class="list-empty">No races yet</div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ── Analysis ──────────────────────────────────────────────────────── -->
+  <div class="center-area">
+    <div class="tabbar" id="tabbar">
+      <button class="tab active" data-tab="overview">Overview</button>
+      <button class="tab" data-tab="course">Course</button>
+      <button class="tab" data-tab="features">Features</button>
+      <button class="tab" data-tab="laps">Laps</button>
+      <button class="tab" data-tab="trace">Trace</button>
+      <button class="tab" data-tab="power">Power &amp; HR</button>
+      <button class="tab" data-tab="replay">Replay</button>
+      <button class="tab" data-tab="compare">Compare</button>
+    </div>
+
+    <div class="panels" id="panels">
+
+      <!-- Overview -->
+      <section class="panel active" data-panel-id="overview">
+        <div id="crop-prompt"></div>
+        <div class="stat-row" id="stat-row"></div>
+
+        <div class="card">
+          <div class="card-head">
+            <span class="card-title">Where the time went</span>
+            <span class="card-sub" id="findings-sub"></span>
+          </div>
+          <div id="findings"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <span class="card-title">Seconds behind your best lap, along the lap</span>
+            <span class="card-sub" id="overview-name"></span>
+          </div>
+          <div class="chart-wrap"><canvas class="chart" id="ov-delta"></canvas></div>
+          <div class="legend" id="ov-legend"></div>
+          <p class="card-note">
+            Each line is one lap measured against your fastest. Where a line steps
+            up is exactly where that lap lost time; a gentle slope is being a little
+            slower everywhere, a vertical jump is a feature or a bobble. Shaded bands
+            are the features you have placed.
+          </p>
+        </div>
+      </section>
+
+      <!-- Course -->
+      <section class="panel" data-panel-id="course">
+        <div class="card">
+          <div class="card-head">
+            <span class="card-title">The course, coloured by how fast you typically were</span>
+            <span class="card-sub" id="map-sub"></span>
+          </div>
+          <div class="btn-row" style="margin-bottom:8px" id="feature-tools">
+            <select id="feature-type" style="width:auto"></select>
+            <button class="btn btn-sm btn-primary" id="add-feature">Place a feature</button>
+            <button class="btn btn-sm" id="pick-start">Set start/finish line</button>
+            <button class="btn btn-sm" id="reset-start" style="display:none">Start line: back to automatic</button>
+            <button class="btn btn-sm" id="copy-features" style="display:none">Copy features from…</button>
+          </div>
+          <div id="pick-hint" class="status status-info" style="display:none"></div>
+          <div class="chart-wrap"><canvas class="chart" id="map-main"></canvas></div>
+          <div class="legend" id="map-legend"></div>
+          <p class="card-note">
+            Pick a feature type, click <em>Place a feature</em>, then click where it
+            starts on the course and where it ends. Put the entry a few metres before
+            you brake for it and the exit where you are back up to speed, so the
+            approach and the remount are inside the zone. Features are saved with the
+            race, and can be copied to another race on the same course.
+          </p>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <span class="card-title">Placed features</span>
+            <span class="card-sub" id="feature-count"></span>
+          </div>
+          <div class="table-scroll" id="feature-list"></div>
+        </div>
+
+        <div class="card" id="suggest-card" style="display:none">
+          <div class="card-head">
+            <span class="card-title">Suggested from the data</span>
+            <span class="card-sub">places you were at running pace on most laps</span>
+          </div>
+          <div class="table-scroll" id="suggest-list"></div>
+        </div>
+
+        <div class="card" id="bobble-card">
+          <div class="card-head">
+            <span class="card-title">Unplanned stops</span>
+            <span class="card-sub" id="bobble-sub"></span>
+          </div>
+          <div class="table-scroll" id="bobble-list"></div>
+          <p class="card-note">
+            Places you came nearly to a halt with no feature marked. If one of these
+            is a feature you have not placed yet &mdash; a bog everybody runs, a tree
+            root everybody clips &mdash; place it and it stops counting as a bobble.
+          </p>
+        </div>
+      </section>
+
+      <!-- Features -->
+      <section class="panel" data-panel-id="features">
+        <div class="card">
+          <div class="card-head">
+            <span class="card-title">What each feature costs</span>
+            <div class="seg" style="width:380px">
+              <button data-fm="lost" class="active">Left on the table</button>
+              <button data-fm="cost">Cost per pass</button>
+              <button data-fm="median">Time</button>
+              <button data-fm="foot">On foot</button>
+              <button data-fm="spread">Spread</button>
+            </div>
+          </div>
+          <div class="chart-wrap"><canvas class="chart" id="feature-bars"></canvas></div>
+          <div class="legend" id="feature-legend"></div>
+          <p class="card-note">
+            <em>Left on the table</em> is the sum over laps of how much slower each pass
+            was than your best pass &mdash; time you have already shown you can save.
+            <em>Cost per pass</em> is how much longer a typical pass took than simply
+            riding the same metres at your approach speed &mdash; the price of the
+            feature itself, which only technique can cut.
+          </p>
+        </div>
+        <div class="card">
+          <div class="card-head">
+            <span class="card-title" id="feature-detail-title">Lap by lap</span>
+            <span class="card-sub" id="feature-detail-sub"></span>
+          </div>
+          <div class="chart-wrap"><canvas class="chart" id="feature-laps"></canvas></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="card-title">Feature detail</span></div>
+          <div class="table-scroll" id="feature-table"></div>
+        </div>
+      </section>
+
+      <!-- Laps -->
+      <section class="panel" data-panel-id="laps">
+        <div class="card">
+          <div class="card-head">
+            <span class="card-title">Lap times: riding, and time in features</span>
+            <span class="card-sub" id="lap-source"></span>
+          </div>
+          <div class="chart-wrap"><canvas class="chart" id="lap-bars"></canvas></div>
+          <div class="legend" id="lapbars-legend"></div>
+        </div>
+        <div class="card">
+          <div class="card-head">
+            <span class="card-title">Every lap, every sector</span>
+            <span class="card-sub">seconds against your own median for that sector</span>
+          </div>
+          <div class="chart-wrap"><canvas class="chart" id="heatmap"></canvas></div>
+          <div class="legend" id="heat-legend"></div>
+          <p class="card-note">
+            One row per lap, one column per stretch of the course. A column that stays
+            red top to bottom is somewhere you are slow <em>every lap</em>; a row that
+            is red all the way across is a lap that went wrong. The bottom strip shows
+            the median time and how many laps that sector was your worst.
+          </p>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="card-title">Lap detail</span></div>
+          <div class="table-scroll" id="lap-table"></div>
+        </div>
+      </section>
+
+      <!-- Trace -->
+      <section class="panel" data-panel-id="trace">
+        <div class="card">
+          <div class="card-head">
+            <span class="card-title">Seconds behind your best lap</span>
+            <div class="seg" id="trace-laps" style="width:auto;max-width:420px"></div>
+          </div>
+          <div class="chart-wrap"><canvas class="chart" id="tr-delta"></canvas></div>
+          <div class="legend" id="tr-legend"></div>
+        </div>
+        <div class="card">
+          <div class="card-head">
+            <span class="card-title">Speed along the lap</span>
+            <span class="card-sub">every lap thin, the median bold</span>
+          </div>
+          <div class="chart-wrap"><canvas class="chart" id="tr-speed"></canvas></div>
+          <p class="card-note">
+            Where every lap dips below the dotted running-pace line, you were off the
+            bike. Where only one lap dips, something went wrong on that lap. Where the
+            laps fan out, your line or your commitment varied.
+          </p>
+        </div>
+      </section>
+
+      <!-- Power & HR -->
+      <section class="panel" data-panel-id="power">
+        <div class="stat-row" id="power-stats"></div>
+        <div class="card">
+          <div class="card-head">
+            <span class="card-title">W′ balance</span>
+            <span class="card-sub" id="wbal-sub"></span>
+          </div>
+          <div class="chart-wrap"><canvas class="chart" id="wbal"></canvas></div>
+          <div class="legend" id="wbal-legend"></div>
+          <p class="card-note">
+            Skiba's differential model: the tank drains above CP and refills below it.
+            In cross the meter reads zero through every dismount, so the balance
+            refills in the places you are working hardest &mdash; treat it as a guide to
+            the riding, not the running.
+          </p>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="card-title">Lap power and heart rate</span></div>
+          <div class="table-scroll" id="power-table"></div>
+        </div>
+      </section>
+
+      <!-- Replay -->
+      <section class="panel" data-panel-id="replay">
+        <div class="card">
+          <div class="card-head">
+            <span class="card-title">Replay</span>
+            <span class="card-sub" id="rp-sub"></span>
+          </div>
+          <div class="card-grid">
+            <div>
+              <div class="chart-wrap"><canvas class="chart" id="rp-map"></canvas></div>
+            </div>
+            <div>
+              <div class="chart-wrap"><canvas class="chart" id="rp-strip"></canvas></div>
+              <div class="stat-row" id="rp-stats" style="margin-top:10px"></div>
+            </div>
+          </div>
+          <div class="replay-bar">
+            <button class="btn btn-primary" id="rp-play">▶ Play</button>
+            <input type="range" id="rp-scrub" min="0" max="1000" value="0">
+            <select id="rp-speed" style="width:72px">
+              <option value="5">5×</option>
+              <option value="15" selected>15×</option>
+              <option value="30">30×</option>
+              <option value="60">60×</option>
+            </select>
+            <span class="replay-clock" id="rp-clock">0:00</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Compare -->
+      <section class="panel" data-panel-id="compare">
+        <div class="card">
+          <div class="card-head">
+            <span class="card-title">Compare races</span>
+            <div class="seg" style="width:420px">
+              <button data-cmp="bestLap" class="active">Best lap</button>
+              <button data-cmp="medianLap">Median lap</button>
+              <button data-cmp="lost">On the table</button>
+              <button data-cmp="foot">On foot</button>
+              <button data-cmp="bobble">Stops</button>
+              <button data-cmp="speed">Speed</button>
+            </div>
+          </div>
+          <div class="chart-wrap"><canvas class="chart" id="cmp-bars"></canvas></div>
+          <p class="card-note">
+            Tick races in the sidebar to include them. Every race is re-analysed with the
+            current settings, so the comparison is like for like.
+          </p>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="card-title">Side by side</span></div>
+          <div class="table-scroll" id="cmp-table"></div>
+        </div>
+        <div id="cmp-circuits"></div>
+      </section>
+
+    </div>
+  </div>
+
+  <!-- ── Rider & conditions ────────────────────────────────────────────── -->
+  <aside class="rail">
+    <div class="scroll-y">
+
+      <div class="rail-section">
+        <div class="sidebar-section-title">
+          <span>Conditions</span>
+          <button class="btn btn-sm" id="wx-refresh" title="Re-fetch weather">↻</button>
+        </div>
+        <div id="wx-readout" class="status status-info">No race loaded.</div>
+      </div>
+
+      <div class="rail-section">
+        <div class="sidebar-section-title">This race</div>
+        <div id="race-readout" class="hint">—</div>
+        <div class="btn-row" style="margin-top:8px">
+          <button class="btn btn-sm" id="export-json">Export JSON</button>
+          <button class="btn btn-sm" id="uncrop" style="display:none">Back to the full recording</button>
+        </div>
+      </div>
+
+      <div class="rail-section">
+        <div class="sidebar-section-title">Thresholds</div>
+        <div class="field">
+          <label for="in-cxRunSpeed">Running pace, below</label>
+          <span class="field-val" id="v-cxRunSpeed">12.6 km/h</span>
+          <input class="field-input" type="range" id="in-cxRunSpeed" min="2.0" max="5.0" step="0.1" value="3.5">
+        </div>
+        <div class="field">
+          <label for="in-cxStopSpeed">Stopped, below</label>
+          <span class="field-val" id="v-cxStopSpeed">3.6 km/h</span>
+          <input class="field-input" type="range" id="in-cxStopSpeed" min="0.3" max="2.5" step="0.1" value="1.0">
+        </div>
+        <div class="field">
+          <label for="in-cxBobbleSeconds">Report a stop that costs at least</label>
+          <span class="field-val" id="v-cxBobbleSeconds">2.5 s</span>
+          <input class="field-input" type="range" id="in-cxBobbleSeconds" min="1" max="10" step="0.5" value="2.5">
+        </div>
+        <div class="field">
+          <label for="in-cxSectorCount">Sectors in the lap grid</label>
+          <span class="field-val" id="v-cxSectorCount">10</span>
+          <input class="field-input" type="range" id="in-cxSectorCount" min="4" max="24" step="1" value="10">
+        </div>
+      </div>
+
+      <div class="rail-section">
+        <div class="sidebar-section-title">Rider</div>
+        <p class="hint" style="margin-bottom:6px">
+          Shared with CritLab. Defaults come from the activity itself; move a slider and
+          your value wins from then on.
+        </p>
+        <div class="field">
+          <label for="in-mass">Total mass (rider + bike)</label>
+          <span class="field-val" id="v-mass">78 kg</span>
+          <input class="field-input" type="range" id="in-mass" min="50" max="130" step="0.5" value="78">
+        </div>
+        <div class="field">
+          <label for="in-ftp">FTP <span class="src" id="src-ftp"></span></label>
+          <span class="field-val" id="v-ftp">250 W</span>
+          <input class="field-input" type="range" id="in-ftp" min="120" max="500" step="1" value="250">
+        </div>
+        <div class="field">
+          <label for="in-cp">Critical power <span class="src" id="src-cp"></span></label>
+          <span class="field-val" id="v-cp">250 W</span>
+          <input class="field-input" type="range" id="in-cp" min="120" max="500" step="1" value="250">
+        </div>
+        <div class="field">
+          <label for="in-wPrime">W′ (anaerobic capacity) <span class="src" id="src-wPrime"></span></label>
+          <span class="field-val" id="v-wPrime">20.0 kJ</span>
+          <input class="field-input" type="range" id="in-wPrime" min="5000" max="45000" step="250" value="20000">
+        </div>
+        <div class="btn-row" style="margin-top:8px">
+          <button class="btn btn-sm" id="fitness-reset" style="display:none">Back to the activity's values</button>
+        </div>
+        <div class="btn-row" style="margin-top:12px">
+          <button class="btn btn-sm" id="reset-settings">Reset to defaults</button>
+        </div>
+      </div>
+
+    </div>
+  </aside>
+</div>
+
+<div class="busy-overlay" id="busy-overlay" hidden>
+  <div class="busy-card">
+    <div class="busy-spinner" aria-hidden="true"></div>
+    <div>
+      <div class="busy-msg" id="busy-msg">Working…</div>
+      <div class="busy-sub" id="busy-sub"></div>
+    </div>
+  </div>
+</div>
+
+<nav class="mobile-nav">
+  <button class="mobile-tab" data-mpanel="rides">Races</button>
+  <button class="mobile-tab active" data-mpanel="analysis">Analysis</button>
+  <button class="mobile-tab" data-mpanel="setup">Setup</button>
+</nav>

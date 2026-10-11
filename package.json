@@ -1,0 +1,16 @@
+{
+  "name": "crosslab",
+  "version": "0.1.0",
+  "description": "Cyclocross race analysis from FIT files and intervals.icu — where the lap time went",
+  "private": true,
+  "license": "MIT",
+  "scripts": {
+    "test": "node test/harness.js && node test/dom.js",
+    "test:unit": "node test/harness.js",
+    "test:dom": "node test/dom.js",
+    "serve": "bundle exec jekyll serve --livereload"
+  },
+  "devDependencies": {
+    "jsdom": "^24.0.0"
+  }
+}

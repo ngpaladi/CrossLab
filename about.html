@@ -1,0 +1,173 @@
+---
+layout: default
+title: About
+---
+
+<div class="prose">
+
+<h1>About CrossLab</h1>
+
+<p class="lead">
+  CrossLab takes a cyclocross race from your head unit, lines every lap up
+  against a clean median lap, and tells you where the time went &mdash; which
+  barriers, which run-up, which sand pit, and whether the problem is that you
+  are slow there every lap or that you are slow there <em>sometimes</em>.
+</p>
+
+<p>
+  It runs entirely in your browser. There is no CrossLab server, no account, and
+  no upload. Races you load are stored in this browser's IndexedDB and go
+  nowhere else. It is the cyclocross sibling of
+  <a href="https://www.noahpaladino.com/CritLab/">CritLab</a>, and the two share
+  their settings and intervals.icu key.
+</p>
+
+<h2>Why a file can't do this on its own</h2>
+
+<p>
+  A criterium is an aerodynamics problem, and CritLab can model it: speed,
+  gradient and wind give the power it should have taken, and your meter says
+  what it did take. A cross race is not like that. The time goes in places the
+  file does not know about &mdash; a set of planks, a flight of stairs, a greasy
+  off-camber &mdash; and the signals it does have (speed drops, cadence reads
+  zero, power reads zero) look the same whether you were hopping barriers or
+  waiting behind a crash.
+</p>
+
+<p>
+  So CrossLab asks you to do the one thing it cannot: say where the features
+  are. Click twice on the course map, once where a feature starts and once
+  where you are back up to speed after it. That is the whole input. Everything
+  else is worked out from the repetition.
+</p>
+
+<h2>What it actually computes</h2>
+
+<h3>Laps</h3>
+<p>
+  Laps are found the way CritLab finds them: repeated passes of a start anchor,
+  gated on heading, with the anchor searched forward from where the recording
+  began so lap 1 is the lap that started at the line. Head-unit lap presses are
+  used instead when they look like a circuit, with the extra check that every
+  lap starts in the same <em>place</em>, since an auto-lap every 5&nbsp;km
+  produces evenly sized laps that are not laps at all.
+</p>
+
+<h3>The mean lap, and lining the laps up against it</h3>
+<p>
+  Every lap is stacked onto a 2&nbsp;m grid and the median position taken at
+  each point, which cuts GPS noise by roughly &radic;n and shrugs off the one
+  lap you took through the pit. That gives one clean copy of the course.
+</p>
+<p>
+  Then each lap is snapped to it by <em>geography</em>, not by fraction of lap
+  distance. The distinction matters: a 2% difference in measured lap distance,
+  which a wide line produces routinely, moves a point 60&nbsp;m, and a set of
+  barriers is 8&nbsp;m long. Each sample is matched to the nearest course point
+  within a window around where it should be, moving forward only, with a
+  penalty for pointing the wrong way so a parallel lane four metres away
+  cannot steal it. The result is, for every lap, the moment you passed every
+  metre of the course. Every number on the site is a difference of two of those
+  moments, which is why sector times always sum to the lap time exactly.
+</p>
+
+<h3>Features</h3>
+<p>
+  A feature is a start point and an end point on the course, stored as
+  latitude and longitude so it survives moving the start line and transfers to
+  another race on the same course. For each lap it gets:
+</p>
+<ul>
+  <li><b>Time</b> through the zone, and the <b>best</b>, <b>median</b> and <b>worst</b> across laps.</li>
+  <li><b>Left on the table</b> &mdash; the sum over laps of how much slower each pass was than your best pass. Time you have already shown you can save.</li>
+  <li><b>Cost per pass</b> &mdash; how much longer a typical pass took than simply riding the same metres at your approach speed. The price of the feature itself, which only technique can cut.</li>
+  <li><b>Approach</b> and <b>exit</b> speed (three seconds either side), the <b>slowest point</b>, and how long it took to get back to approach speed. Braking early and slow remounts are the two classic leaks, and they look different.</li>
+  <li><b>On foot</b> and <b>stopped</b> seconds, from speed thresholds you can set in the rail.</li>
+  <li>A <b>verdict</b>: steady, a few bad laps (named), or erratic. Steady-but-slow is a technique to learn; erratic is a technique that has not settled; one bad lap is an incident.</li>
+</ul>
+
+<h3>Unplanned stops</h3>
+<p>
+  Anywhere you came nearly to a halt with no feature marked. Each is costed
+  against the speed you were carrying into it, and drawn on the course map. If
+  one of them is a feature you have not placed yet, place it and it moves from
+  the bobble list to the feature list.
+</p>
+
+<h3>Suggestions</h3>
+<p>
+  Places where your median speed over all laps dropped to running pace for
+  several metres, and no feature covers them, are marked with a
+  <b>?</b> and offered as features. Gradient decides whether it is called a
+  run-up. They are offered, never applied: you know whether that was a set of
+  barriers or a corner everybody walked because it was a bog.
+</p>
+
+<h3>The delta trace</h3>
+<p>
+  Seconds behind your best lap, plotted along the lap, one line per lap. Where a
+  line steps up is exactly where that lap lost time. A gentle slope is being a
+  little slower everywhere; a vertical jump is a feature or a bobble. This is
+  the one chart to look at if you only look at one.
+</p>
+
+<h3>Fade</h3>
+<p>
+  The second half of the race against the first, split into time inside the
+  features and time riding between them. "You faded 20&nbsp;s a lap, and 88% of
+  that was the riding" and "you faded 20&nbsp;s a lap, and 70% of that was the
+  features" call for different training.
+</p>
+
+<h3>Race trimming</h3>
+<p>
+  A cross file is rarely just the race: it is the pre-ride, ten minutes on the
+  grid, the race, and a cool-down lap. Pre-ride laps pass every geometric test
+  for "a lap" and then sit at the top of every worst-lap list. CrossLab finds
+  the longest run of laps at race pace with no long stop inside them, treats a
+  long stand at the start of a lap as the grid, and offers to trim to that.
+</p>
+
+<h2>Power and heart rate</h2>
+<p>
+  Neither is required. If a power meter was on the bike you get lap power,
+  normalised power, work, W&prime; balance (Skiba's differential model, with
+  CP and W&prime; from the activity or from the shared rider settings), and the
+  split between power while riding and power inside features &mdash; the
+  latter is low by construction, since the meter reads zero while you carry
+  the bike. Heart rate gives lap averages and maxima.
+</p>
+
+<h2>Weather</h2>
+<p>
+  From Open-Meteo, for the race's rounded coordinates and date: temperature,
+  wind, rain during the race, and rain in the 24 hours before the start, which
+  is what decided whether the course was a bog. It is context, not a model
+  input.
+</p>
+
+<h2>What it shares with CritLab</h2>
+<p>
+  Both tools live on the same site, so the browser storage is one bag for both.
+  The settings blob, the intervals.icu key, your mass, FTP, CP and W&prime;,
+  and the weather and map caches are the same entries with the same names.
+  Paste the key once and both tools see it. Races are kept in a database of
+  CrossLab's own, with the same layout, so a race exported as JSON from either
+  tool loads in the other; CritLab will simply not know what to do with a
+  feature list, and CrossLab will not try to model drafting.
+</p>
+
+<h2>Privacy</h2>
+<p>
+  CrossLab is a static page. No server, no backend, no database, no account, no
+  analytics. Your intervals.icu key is sent only to intervals.icu, directly from
+  your browser, and kept in its own storage entry with a lifetime you choose.
+  Open-Meteo is sent the rounded coordinates and date of a race; Overpass is
+  sent the bounding box of the course. Neither is told who you are, because
+  CrossLab does not know.
+</p>
+
+<h2>License</h2>
+<p>MIT. Source on <a href="https://github.com/ngpaladi/CrossLab">GitHub</a>.</p>
+
+</div>
