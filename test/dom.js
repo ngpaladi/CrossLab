@@ -177,7 +177,7 @@ const G = name => window.eval(name);
   nameInput.dispatchEvent(new window.Event('change', { bubbles: true }));
   await sleep(200);
   check('feature renamed', Array.from(document.querySelectorAll('#feature-list input[data-act="label"]')).some(i => i.value === 'Greasy bit'));
-  document.querySelector('#feature-list [data-act="nudge"][data-end="exit"][data-m="6"]').click();
+  document.querySelector('#feature-list [data-act="nudge"][data-end="exit"][data-m="2"]').click();
   await sleep(200);
   const removeBtns = document.querySelectorAll('#feature-list [data-act="remove"]');
   removeBtns[removeBtns.length - 1].click();

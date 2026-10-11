@@ -1116,8 +1116,8 @@
       const t = Analyzer.FEATURE_TYPES[f.type] || Analyzer.FEATURE_TYPES.custom;
       const typeSel = '<select data-fid="' + f.id + '" data-act="type" style="width:auto">' +
         Object.entries(Analyzer.FEATURE_TYPES).map(([key, tt]) => '<option value="' + key + '"' + (key === f.type ? ' selected' : '') + '>' + Charts.esc(tt.label) + '</option>').join('') + '</select>';
-      const nudge = end => '<span class="nudge"><button class="btn btn-sm" data-fid="' + f.id + '" data-act="nudge" data-end="' + end + '" data-m="-6" title="6 m earlier">−</button>' +
-        '<button class="btn btn-sm" data-fid="' + f.id + '" data-act="nudge" data-end="' + end + '" data-m="6" title="6 m later">+</button></span>';
+      const nudge = end => '<span class="nudge"><button class="btn btn-sm" data-fid="' + f.id + '" data-act="nudge" data-end="' + end + '" data-m="-2" title="2 m earlier">−</button>' +
+        '<button class="btn btn-sm" data-fid="' + f.id + '" data-act="nudge" data-end="' + end + '" data-m="2" title="2 m later">+</button></span>';
       const status = f.offCourse ? '<span class="tag tag-warm">off the course</span>' : f.wraps ? '<span class="tag tag-mid">crosses the line</span>' : '';
       const show = f.j0 >= 0 ? '<button class="btn btn-sm btn-show" data-fid="' + f.id + '" data-act="show" title="Zoom the map to this feature">&#x1F50D;&#xFE0E;</button>' : '';
       return '<tr' + (f.id === state.activeFeature ? ' class="active"' : '') + '>' +
