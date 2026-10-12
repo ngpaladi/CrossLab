@@ -83,7 +83,7 @@ app: true
       <button class="tab" data-tab="features">Features</button>
       <button class="tab" data-tab="laps">Laps</button>
       <button class="tab" data-tab="trace">Trace</button>
-      <button class="tab" data-tab="power">Power &amp; HR</button>
+      <button class="tab" data-tab="effort">Heart rate</button>
       <button class="tab" data-tab="replay">Replay</button>
       <button class="tab" data-tab="compare">Compare</button>
     </div>
@@ -123,8 +123,13 @@ app: true
       <section class="panel" data-panel-id="course">
         <div class="card">
           <div class="card-head">
-            <span class="card-title">The course, coloured by how fast you typically were</span>
+            <span class="card-title" id="map-title">The course, coloured by how fast you typically were</span>
             <span class="card-sub" id="map-sub"></span>
+            <div class="seg" id="map-color">
+              <button data-color="speed" class="active">Speed</button>
+              <button data-color="hr">Heart rate</button>
+              <button data-color="lost">Time lost</button>
+            </div>
           </div>
           <div class="btn-row" style="margin-bottom:8px" id="feature-tools">
             <select id="feature-type" style="width:auto"></select>
@@ -274,10 +279,52 @@ app: true
         </div>
       </section>
 
-      <!-- Power & HR -->
-      <section class="panel" data-panel-id="power">
-        <div class="stat-row" id="power-stats"></div>
+      <!-- Heart rate and effort -->
+      <section class="panel" data-panel-id="effort">
+        <div class="stat-row" id="effort-stats"></div>
         <div class="card">
+          <div class="card-head">
+            <span class="card-title">Heart rate along the lap</span>
+            <span class="card-sub" id="hr-sub"></span>
+          </div>
+          <div class="chart-wrap"><canvas class="chart" id="hr-trace"></canvas></div>
+          <div class="legend" id="hr-legend"></div>
+          <p class="card-note">
+            One line per lap, drawn against distance into the lap, so the places
+            where your heart peaks sit on top of the features that caused them.
+            The heart trails the legs by 15 to 30&nbsp;s: a peak lands <em>after</em>
+            the run-up, in the sector where you have to ride it off.
+          </p>
+        </div>
+        <div class="card" id="hr-feature-card">
+          <div class="card-head">
+            <span class="card-title">What each feature does to your heart rate</span>
+            <span class="card-sub">medians over the laps with a clean reading</span>
+          </div>
+          <div class="table-scroll" id="hr-feature-table"></div>
+          <p class="card-note">
+            <b>In</b> is the five seconds before the entry; <b>peak</b> is the
+            highest reading between the entry and 40&nbsp;s after the exit;
+            <b>settle</b> is how long after the peak it took to get back within
+            2&nbsp;bpm of the entry value. A rise that never settles is the bill
+            for running the feature, and it is paid on the bike afterwards.
+          </p>
+        </div>
+        <div class="card" id="hr-zone-card" style="display:none">
+          <div class="card-head">
+            <span class="card-title">Time in zones</span>
+            <span class="card-sub" id="hr-zone-sub"></span>
+          </div>
+          <div id="hr-zones" class="zones"></div>
+        </div>
+        <div class="card">
+          <div class="card-head">
+            <span class="card-title">Lap by lap</span>
+            <span class="card-sub">metres per heartbeat is the fitness proxy that needs no power meter</span>
+          </div>
+          <div class="table-scroll" id="effort-table"></div>
+        </div>
+        <div class="card" id="wbal-card" style="display:none">
           <div class="card-head">
             <span class="card-title">W′ balance</span>
             <span class="card-sub" id="wbal-sub"></span>
@@ -290,10 +337,6 @@ app: true
             refills in the places you are working hardest &mdash; treat it as a guide to
             the riding, not the running.
           </p>
-        </div>
-        <div class="card">
-          <div class="card-head"><span class="card-title">Lap power and heart rate</span></div>
-          <div class="table-scroll" id="power-table"></div>
         </div>
       </section>
 
@@ -339,6 +382,7 @@ app: true
               <button data-cmp="foot">On foot</button>
               <button data-cmp="bobble">Stops</button>
               <button data-cmp="speed">Speed</button>
+              <button data-cmp="mpb">m / beat</button>
             </div>
           </div>
           <div class="chart-wrap"><canvas class="chart" id="cmp-bars"></canvas></div>
@@ -427,6 +471,16 @@ app: true
           <label for="in-wPrime">W′ (anaerobic capacity) <span class="src" id="src-wPrime"></span></label>
           <span class="field-val" id="v-wPrime">20.0 kJ</span>
           <input class="field-input" type="range" id="in-wPrime" min="5000" max="45000" step="250" value="20000">
+        </div>
+        <div class="field">
+          <label for="in-cxLthr">Threshold heart rate <span class="src" id="src-cxLthr"></span></label>
+          <span class="field-val" id="v-cxLthr">170 bpm</span>
+          <input class="field-input" type="range" id="in-cxLthr" min="120" max="210" step="1" value="170">
+        </div>
+        <div class="field">
+          <label for="in-cxMaxHr">Max heart rate <span class="src" id="src-cxMaxHr"></span></label>
+          <span class="field-val" id="v-cxMaxHr">190 bpm</span>
+          <input class="field-input" type="range" id="in-cxMaxHr" min="140" max="230" step="1" value="190">
         </div>
         <div class="btn-row" style="margin-top:8px">
           <button class="btn btn-sm" id="fitness-reset" style="display:none">Back to the activity's values</button>

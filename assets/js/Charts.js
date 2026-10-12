@@ -603,6 +603,23 @@ const Charts = (() => {
       const sorted = Array.from(medV).filter(isFinite).sort((a, b) => a - b);
       vLo = Physics.percentile(sorted, 0.05); vHi = Physics.percentile(sorted, 0.95);
     }
+    // What the course line is coloured by: typical speed (default), typical
+    // heart rate, or time lost per metre against your best lap.
+    const colorBy = opts.colorBy === 'hr' && A.effort && A.effort.hrAlong ? 'hr'
+      : opts.colorBy === 'lost' && A.aligned && A.aligned.length >= 2 ? 'lost' : 'speed';
+    let along = medV, cLo = vLo, cHi = vHi, colorAt = v => speedColor(v, vLo, vHi);
+    if (colorBy === 'hr') {
+      along = A.effort.hrAlong;
+      const sorted = Array.from(along).filter(isFinite).sort((a, b) => a - b);
+      cLo = Physics.percentile(sorted, 0.05); cHi = Physics.percentile(sorted, 0.95);
+      colorAt = v => isFinite(v) ? speedColor(cHi + cLo - v, cLo, cHi) : INK.muted;   // high HR = warm
+    } else if (colorBy === 'lost') {
+      along = timeLostAlong(A);
+      const sorted = Array.from(along).filter(isFinite).sort((a, b) => a - b);
+      cLo = 0; cHi = Math.max(0.05, Physics.percentile(sorted, 0.95));
+      colorAt = v => deltaColor(v, cHi);
+    }
+    canvas._clColorScale = { by: colorBy, lo: cLo, hi: cHi };
 
     if (ml && medV) {
       g.lineWidth = 4.5;
@@ -610,7 +627,7 @@ const Charts = (() => {
       for (let j = 1; j <= ml.n; j++) {
         const a = pr.point(ml.lat[j - 1], ml.lon[j - 1]);
         const c = pr.point(ml.lat[j % ml.n], ml.lon[j % ml.n]);
-        g.strokeStyle = speedColor(medV[j - 1], vLo, vHi);
+        g.strokeStyle = colorAt(along[j - 1]);
         g.beginPath(); g.moveTo(a[0], a[1]); g.lineTo(c[0], c[1]); g.stroke();
       }
     } else {
@@ -752,6 +769,8 @@ const Charts = (() => {
       const rows = [];
       if (hit.j >= 0 && medV) {
         rows.push({ color: speedColor(medV[hit.j], vLo, vHi), name: 'Typical speed here', value: (medV[hit.j] * 3.6).toFixed(1) + ' km/h' });
+        if (colorBy === 'hr' && isFinite(along[hit.j])) rows.push({ color: colorAt(along[hit.j]), name: 'Typical heart rate', value: Math.round(along[hit.j]) + ' bpm' });
+        if (colorBy === 'lost') rows.push({ color: colorAt(along[hit.j]), name: 'Lost vs best lap', value: (along[hit.j] * 10).toFixed(1) + ' s per 10 m, all laps' });
         const f = feats.find(ff => inSpan(ff, hit.j, ml.n));
         if (f) rows.push({ color: f.color, name: 'Feature', value: f.label });
         const near = (A.bobbles || []).filter(b => Math.abs(b.j - hit.j) < 8);
@@ -764,6 +783,24 @@ const Charts = (() => {
     });
 
     return pr;
+  }
+
+  /**
+   * Seconds lost per metre at each point of the course, summed over laps
+   * against the quickest lap through that metre, smoothed over 10 m. The
+   * "where did the time go" map.
+   */
+  function timeLostAlong(A) {
+    const ml = A.meanLap;
+    const out = new Float64Array(ml.n);
+    const dts = A.aligned.map(al => { const d = new Float64Array(ml.n); for (let j = 0; j < ml.n; j++) d[j] = al.tAt[j + 1] - al.tAt[j]; return d; });
+    for (let j = 0; j < ml.n; j++) {
+      let best = Infinity, sum = 0;
+      for (const d of dts) if (d[j] < best) best = d[j];
+      for (const d of dts) sum += d[j] - best;
+      out[j] = sum / ml.step;
+    }
+    return Physics.smooth(out, Math.max(1, Math.round(5 / ml.step)));
   }
 
   function inSpan(f, j, m) {
@@ -919,6 +956,64 @@ const Charts = (() => {
       g.restore();
       const rows = [{ color: INK.text, name: 'Median', value: (medV[j] * 3.6).toFixed(1) + ' km/h' }];
       A.aligned.forEach((al, k) => rows.push({ color: lapColor(k + 1), name: 'Lap ' + (k + 1), value: (al.vAt[j] * 3.6).toFixed(1) + ' km/h' }));
+      return ttRows(fmtKm(s) + ' km into the lap', rows);
+    });
+  }
+
+  // ── 3b. Heart rate along the lap ──────────────────────────────────────────
+
+  /**
+   * One line per lap of heart rate against distance into the lap, with the
+   * median in white and the features shaded. Not lag-shifted on purpose:
+   * where on the course the heart peaks is the point of the chart.
+   */
+  function hrTrace(canvas, A, opts = {}) {
+    const { g, w, h } = setup(canvas, opts.height || 240);
+    const ml = A.meanLap, E = A.effort;
+    if (!ml || !A.aligned) { emptyState(g, w, h, 'Needs at least two detected laps'); return; }
+    if (!E || !E.hrAlong) { emptyState(g, w, h, 'No heart-rate data in this ride'); return; }
+    const b = box(w, h, { l: 48, r: 14, t: 14, b: 26 });
+    const x = scale(0, ml.lapLen, b.x0, b.x1);
+    let lo = Infinity, hi = -Infinity;
+    for (const a of E.perLap) for (let j = 0; j < ml.n; j++) { const v = a[j]; if (!isFinite(v)) continue; if (v < lo) lo = v; if (v > hi) hi = v; }
+    if (!isFinite(lo)) { emptyState(g, w, h, 'No clean heart-rate reading on any lap'); return; }
+    if (opts.lthr > 0) { lo = Math.min(lo, opts.lthr); hi = Math.max(hi, opts.lthr); }
+    const pad = Math.max(4, (hi - lo) * 0.1);
+    const y = scale(hi + pad, lo - pad, b.y0, b.y1);
+
+    shadeFeatures(g, b, x, A);
+    gridY(g, b, y, ticks(lo - pad, hi + pad, 5), v => v.toFixed(0));
+    axisX(g, b, x, ticks(0, ml.lapLen, 6), v => fmtKm(v) + ' km');
+
+    if (opts.lthr > 0) {
+      const yy = Math.round(y(opts.lthr)) + 0.5;
+      g.save(); g.strokeStyle = INK.muted; g.setLineDash([2, 4]); g.lineWidth = 1;
+      g.beginPath(); g.moveTo(b.x0, yy); g.lineTo(b.x1, yy); g.stroke(); g.restore();
+      label(g, 'threshold ' + Math.round(opts.lthr), b.x1 - 4, yy - 7, INK.muted, 'right');
+    }
+    const only = opts.onlyLap || null;
+    E.perLap.forEach((a, k) => {
+      const lap = k + 1;
+      const dim = only && lap !== only;
+      line(g, b, ml.s, a, x, y, lapColor(lap), { width: only === lap ? 2 : 1.2, alpha: dim ? 0.12 : (only ? 1 : 0.5) });
+    });
+    if (!only) line(g, b, ml.s, Physics.smooth(E.hrAlong, 3), x, y, INK.text, { width: 2 });
+
+    const base = g.getImageData(0, 0, canvas.width, canvas.height);
+    canvas._clOnLeave = () => g.putImageData(base, 0, 0);
+    onHover(canvas, (px, py) => {
+      if (px < b.x0 || px > b.x1) return null;
+      const s = x.invert(px);
+      const j = Math.max(0, Math.min(ml.n - 1, Math.round(s / ml.step)));
+      g.putImageData(base, 0, 0);
+      g.save();
+      g.strokeStyle = INK.muted; g.lineWidth = 1; g.setLineDash([3, 3]);
+      g.beginPath(); g.moveTo(Math.round(px) + 0.5, b.y0); g.lineTo(Math.round(px) + 0.5, b.y1); g.stroke();
+      g.restore();
+      const rows = [{ color: INK.text, name: 'Median', value: isFinite(E.hrAlong[j]) ? Math.round(E.hrAlong[j]) + ' bpm' : '—' }];
+      E.perLap.forEach((a, k) => rows.push({ color: lapColor(k + 1), name: 'Lap ' + (k + 1), value: isFinite(a[j]) ? Math.round(a[j]) + ' bpm' : 'no reading' }));
+      const f = (A.features || []).find(ff => ff.j0 >= 0 && !ff.offCourse && inSpan(ff, j, ml.n));
+      if (f) rows.push({ color: f.color, name: 'Feature', value: f.label });
       return ttRows(fmtKm(s) + ' km into the lap', rows);
     });
   }
@@ -1248,6 +1343,7 @@ const Charts = (() => {
       foot:      { get: r => r.onFoot,    fmt: v => v.toFixed(0) + ' s', title: 'Time on foot, whole race' },
       bobble:    { get: r => r.bobbleCost, fmt: v => v.toFixed(0) + ' s', title: 'Lost to unplanned stops' },
       speed:     { get: r => r.avgV * 3.6, fmt: v => v.toFixed(1) + ' km/h', title: 'Average speed' },
+      mpb:       { get: r => r.metresPerBeat, fmt: v => v.toFixed(2) + ' m', title: 'Metres per heartbeat (more is fitter, same course)' },
     }[metric] || { get: r => r.bestLap, fmt: fmtClock, title: 'Best lap' };
 
     const vals = rows.map(spec.get);
@@ -1451,7 +1547,7 @@ const Charts = (() => {
     SERIES, INK, DIVERGE, LAPS, lapColor,
     deltaColor, deltaLegendStops, deltaScale, speedColor,
     setup, box, scale, ticks, line, label, onHover, ttRows, projector,
-    courseMap, courseMapZoom, courseMapZoomTo, deltaTrace, speedTrace, lapBars, sectorHeatmap, featureBars, featureLaps,
+    courseMap, courseMapZoom, courseMapZoomTo, timeLostAlong, deltaTrace, speedTrace, hrTrace, lapBars, sectorHeatmap, featureBars, featureLaps,
     wbalChart, compareBars, replayFrame, cropTimeline,
     drawBasemap, drawAttribution, BASEMAP, medianSpeedAlong,
     fmtClock, fmtKm, fmt2, fmtPct, esc, shorten,

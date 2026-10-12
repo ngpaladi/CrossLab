@@ -128,14 +128,37 @@ title: About
   long stand at the start of a lap as the grid, and offers to trim to that.
 </p>
 
-<h2>Power and heart rate</h2>
+<h2>Heart rate</h2>
 <p>
-  Neither is required. If a power meter was on the bike you get lap power,
+  Most people racing cross have a strap and no power meter, so the heart is
+  the effort signal CrossLab leans on. It is read through a mask first: a
+  strap that has not wetted reads low and flat, and a racer's heart does not
+  sit at 60% of its maximum for a minute at race pace, so stretches like that
+  are thrown out and named, rather than averaged into every number on the
+  page. A lap counts for heart-rate purposes only if most of it was read.
+</p>
+<ul>
+  <li><b>Along the lap</b> &mdash; one line per lap against distance into the lap, not shifted for the heart's lag, so the peaks sit on the course where they happen: after the run-up, in the sector you have to ride it off.</li>
+  <li><b>Per feature</b> &mdash; heart rate just before the entry, the peak between the entry and 40&nbsp;s after the exit (the heart trails the legs by 15 to 30&nbsp;s, so the peak for an 8&nbsp;m set of barriers lands well after them), the rise, and how long it took to settle back. A rise that never settles is the bill for running, paid on the bike afterwards.</li>
+  <li><b>Metres per heartbeat</b> &mdash; lap speed over lap heart rate. On the same course, more metres per beat is fitter; across the race, fewer in the second half than the first is <b>decoupling</b>, and the fade finding says whether the heart was still pinned when the speed fell (fitness) or came down with it (legs, grip, or the head).</li>
+  <li><b>On foot against riding</b>, with the lag applied so the beats are charged to the legs that caused them; <b>the start</b>, as seconds to 95% of max from the line; and the drop in <b>the minute after the finish</b>, when the recording ran that long.</li>
+</ul>
+<p>
+  Threshold and maximum come from the activity when intervals.icu supplies
+  them, from the rail when you set them, and otherwise the maximum is the
+  highest reading in the race and the threshold stays unknown &mdash; a
+  percentage of max is honest, an invented threshold is not. Zones are shown
+  only with the activity's own boundaries.
+</p>
+
+<h2>Power</h2>
+<p>
+  Not required. If a power meter was on the bike you get lap power,
   normalised power, work, W&prime; balance (Skiba's differential model, with
   CP and W&prime; from the activity or from the shared rider settings), and the
   split between power while riding and power inside features &mdash; the
   latter is low by construction, since the meter reads zero while you carry
-  the bike. Heart rate gives lap averages and maxima.
+  the bike.
 </p>
 
 <h2>Weather</h2>
@@ -150,7 +173,8 @@ title: About
 <p>
   Both tools live on the same site, so the browser storage is one bag for both.
   The settings blob, the intervals.icu key, your mass, FTP, CP and W&prime;,
-  and the weather and map caches are the same entries with the same names.
+  and the weather and map caches are the same entries with the same names;
+  threshold and max heart rate are CrossLab's own keys in the same blob.
   Paste the key once and both tools see it. Races are kept in a database of
   CrossLab's own, with the same layout, so a race exported as JSON from either
   tool loads in the other; CritLab will simply not know what to do with a

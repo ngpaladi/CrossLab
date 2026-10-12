@@ -815,3 +815,11 @@ table.data select { padding: 2px 6px; font-size: 12px; }
 #trace-laps button.active { background: var(--surface3); }
 .card-head .seg { flex-shrink: 0; }
 @media (max-width: 900px) { .card-head { flex-wrap: wrap; } .card-head .seg { width: 100% !important; } }
+
+/* Heart-rate zones: one bar per zone, width = share of the race. */
+.zones { display: flex; flex-direction: column; gap: 6px; }
+.zone { display: grid; grid-template-columns: 56px 1fr 120px; gap: 10px; align-items: center; font-size: 12px; }
+.zone-name { color: var(--muted); font-weight: 600; }
+.zone-bar { height: 12px; background: var(--surface2); border-radius: 6px; overflow: hidden; }
+.zone-fill { height: 100%; border-radius: 6px; }
+.zone-val { text-align: right; color: var(--muted); }

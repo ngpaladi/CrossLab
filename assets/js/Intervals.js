@@ -159,6 +159,10 @@ const Intervals = (() => {
       weight: numOrNull(a.icu_weight),
       cp: numOrNull(a.icu_pm_cp),
       wPrime: numOrNull(a.icu_pm_w_prime),
+      lthr: numOrNull(a.lthr),
+      maxHr: numOrNull(a.athlete_max_hr) || numOrNull(a.max_heartrate),
+      restHr: numOrNull(a.icu_resting_hr),
+      hrZones: Array.isArray(a.icu_hr_zones) ? a.icu_hr_zones.map(Number) : null,
       hasPower: !!(a.icu_average_watts || a.average_watts) ||
         streams.includes('watts') || streams.includes('fixed_watts'),
       raw: a,
@@ -286,6 +290,10 @@ const Intervals = (() => {
       weightKg: activity.weight,
       cp: activity.cp,
       wPrime: activity.wPrime,
+      lthr: activity.lthr || null,
+      maxHr: activity.maxHr || null,
+      restHr: activity.restHr || null,
+      hrZones: Array.isArray(activity.hrZones) ? activity.hrZones : null,
       totals: {
         distance: activity.distance,
         elapsed: activity.elapsedTime,

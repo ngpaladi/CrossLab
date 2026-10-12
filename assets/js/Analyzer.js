@@ -47,24 +47,26 @@ const Analyzer = (() => {
     const meanLap = buildMeanLap(P, laps);
     const aligned = meanLap ? laps.map(l => alignLap(P, l, meanLap)) : null;
 
+    const hq = hrQuality(P, laps, cfg);
     const features = resolveFeatures(P, meanLap, cfg.features || []);
-    const featureRows = analyseFeatures(P, laps, aligned, meanLap, features, cfg);
+    const featureRows = analyseFeatures(P, laps, aligned, meanLap, features, cfg, hq);
     const segments = buildSegments(meanLap, features);
     const bobbles = detectBobbles(P, laps, aligned, meanLap, features, cfg);
-    const lapRows = summariseLaps(P, laps, aligned, meanLap, featureRows, segments, bobbles, cfg);
+    const lapRows = summariseLaps(P, laps, aligned, meanLap, featureRows, segments, bobbles, cfg, hq);
     const grid = sectorGrid(P, laps, aligned, meanLap, cfg);
     const delta = deltaTraces(laps, aligned, meanLap, lapRows);
     const suggestions = cfg.suggest ? suggestFeatures(P, laps, aligned, meanLap, features, cfg) : [];
     const shape = raceShape(lapRows);
     const power = P.hasPower ? summarisePower(P, laps, aligned, meanLap, segments, cfg) : null;
-    const summary = summarise(P, laps, lapRows, featureRows, bobbles, shape, cfg);
-    const findings = buildFindings(P, lapRows, featureRows, bobbles, grid, shape, summary, cfg);
+    const effort = hq ? summariseEffort(P, laps, aligned, meanLap, featureRows, lapRows, grid, hq, cfg) : null;
+    const summary = summarise(P, laps, lapRows, featureRows, bobbles, shape, cfg, hq);
+    const findings = buildFindings(P, lapRows, featureRows, bobbles, grid, shape, summary, cfg, effort);
 
     return {
       cfg,
       laps: lapRows, lapBounds: laps, meanLap, aligned,
       features: featureRows, segments, bobbles, grid, delta, suggestions,
-      shape, power, summary, findings,
+      shape, power, effort, hrQuality: hq, summary, findings,
       circuit: circuitFingerprint(P, meanLap),
     };
   }
@@ -517,7 +519,7 @@ const Analyzer = (() => {
   }
 
   /** Per feature, per lap: what it cost and how it was ridden. */
-  function analyseFeatures(P, laps, aligned, ml, features, cfg) {
+  function analyseFeatures(P, laps, aligned, ml, features, cfg, hq) {
     if (!ml || !aligned) return [];
     const rows = [];
     for (const f of features) {
@@ -533,7 +535,7 @@ const Analyzer = (() => {
       };
       if (f.j0 >= 0 && !f.offCourse) {
         for (let k = 0; k < laps.length; k++) {
-          row.perLap.push(featureInstance(P, laps[k], aligned[k], aligned[k + 1] || null, ml, f, k + 1, cfg));
+          row.perLap.push(featureInstance(P, laps[k], aligned[k], aligned[k + 1] || null, ml, f, k + 1, cfg, hq));
         }
       }
       summariseFeature(row, cfg);
@@ -542,7 +544,8 @@ const Analyzer = (() => {
     return rows;
   }
 
-  function featureInstance(P, lap, al, alNext, ml, f, lapNo, cfg) {
+  function featureInstance(P, lap, al, alNext, ml, f, lapNo, cfg, hq) {
+    const hrOk = i => hq && i >= 0 && i < P.n && hq.valid[i];
     let seconds, iIn, iOut;
     if (!f.wraps) {
       seconds = al.tAt[f.j1] - al.tAt[f.j0];
@@ -566,7 +569,31 @@ const Analyzer = (() => {
       if (P.v[i] < cfg.stopSpeed) stopped += P.dt;
       if (P.cad && P.cad[i] < 1) noPedal += P.dt;
       kj += P.watts[i] * P.dt / 1000;
-      if (P.hr && P.hr[i] > 0) { hrS += P.hr[i]; hrK++; }
+      if (hrOk(i)) { hrS += P.hr[i]; hrK++; }
+    }
+    // What the feature does to the heart. The heart trails the legs by 15 to
+    // 30 s, so the HR *inside* an 8 m barrier zone is the HR from the straight
+    // before it: measure the response as the peak between the entry and
+    // HR_WINDOW seconds after the exit, against the HR just before the entry,
+    // and the settle as seconds from that peak back to within 2 bpm of it.
+    let hrIn = NaN, hrPeak = NaN, hrRise = NaN, hrSettle = NaN, hrPeakLag = NaN;
+    if (hq) {
+      const a0 = Math.max(0, iIn - 5), a1 = iIn - 1;
+      let s0 = 0, k0 = 0;
+      for (let i = a0; i <= a1; i++) if (hrOk(i)) { s0 += P.hr[i]; k0++; }
+      const w1 = Math.min(P.n - 1, iOut + HR_WINDOW);
+      let pk = -1, ipk = -1, bad = 0;
+      for (let i = iIn; i <= w1; i++) {
+        if (!hrOk(i)) { bad++; continue; }
+        if (P.hr[i] > pk) { pk = P.hr[i]; ipk = i; }
+      }
+      if (k0 >= 3 && ipk >= 0 && bad < (w1 - iIn + 1) * 0.2) {
+        hrIn = s0 / k0; hrPeak = pk; hrRise = pk - hrIn; hrPeakLag = ipk - iOut;
+        hrSettle = HR_SETTLE_CAP;
+        for (let i = ipk; i <= Math.min(P.n - 1, ipk + HR_SETTLE_CAP); i++) {
+          if (hrOk(i) && P.hr[i] <= hrIn + 2) { hrSettle = i - ipk; break; }
+        }
+      }
     }
     // Recovery: seconds after the exit until speed is back to 90% of the approach.
     let recover = NaN;
@@ -586,6 +613,7 @@ const Analyzer = (() => {
       cost: entryV > 1 ? seconds - metres / entryV : NaN,
       kj, avgW: P.hasPower ? kj * 1000 / Math.max(1, seconds) : NaN,
       avgHr: hrK ? hrS / hrK : NaN,
+      hrIn, hrPeak, hrRise, hrSettle, hrPeakLag,
     };
   }
 
@@ -597,7 +625,9 @@ const Analyzer = (() => {
       Object.assign(row, { best: NaN, median: NaN, worst: NaN, sd: NaN, cv: NaN,
         lostVsBest: 0, lostVsMedian: 0, medianCost: NaN, total: 0, bestLap: null, worstLap: null,
         medianEntryV: NaN, medianExitV: NaN, medianMinV: NaN, medianOnFoot: NaN, medianRecover: NaN,
-        medianStopped: NaN, totalStopped: 0, medianW: NaN, medianHr: NaN, badLaps: [], verdict: 'few' });
+        medianStopped: NaN, totalStopped: 0, medianW: NaN, medianHr: NaN,
+        medianHrIn: NaN, medianHrPeak: NaN, medianHrRise: NaN, medianHrSettle: NaN, medianHrPeakLag: NaN, hrN: 0,
+        badLaps: [], verdict: 'few' });
       return;
     }
     const best = Math.min(...secs), worst = Math.max(...secs);
@@ -618,7 +648,14 @@ const Analyzer = (() => {
     row.medianStopped = median(ok.map(x => x.stopped));
     row.totalStopped = ok.reduce((a, x) => a + x.stopped, 0);
     row.medianW = median(ok.map(x => x.avgW));
-    row.medianHr = median(ok.map(x => x.avgHr));
+    row.medianHr = median(ok.map(x => x.avgHr).filter(isFinite));
+    const hrOk = ok.filter(x => isFinite(x.hrRise));
+    row.hrN = hrOk.length;
+    row.medianHrIn = hrOk.length ? median(hrOk.map(x => x.hrIn)) : NaN;
+    row.medianHrPeak = hrOk.length ? median(hrOk.map(x => x.hrPeak)) : NaN;
+    row.medianHrRise = hrOk.length ? median(hrOk.map(x => x.hrRise)) : NaN;
+    row.medianHrSettle = hrOk.length ? median(hrOk.map(x => x.hrSettle)) : NaN;
+    row.medianHrPeakLag = hrOk.length ? median(hrOk.map(x => x.hrPeakLag)) : NaN;
     // Which laps were the slow ones. "Erratic" and "one bad lap" are different
     // problems: the first is technique that has not settled, the second is an
     // incident.
@@ -706,7 +743,7 @@ const Analyzer = (() => {
 
   // ── Laps ──────────────────────────────────────────────────────────────────
 
-  function summariseLaps(P, laps, aligned, ml, featureRows, segments, bobbles, cfg) {
+  function summariseLaps(P, laps, aligned, ml, featureRows, segments, bobbles, cfg, hq) {
     const rows = [];
     const bestT = aligned ? Math.min(...aligned.map(a => a.T)) : NaN;
     for (let k = 0; k < laps.length; k++) {
@@ -720,8 +757,11 @@ const Analyzer = (() => {
         if (P.v[i] < cfg.stopSpeed) stopped += P.dt;
         if (P.cad && P.cad[i] < 1 && P.moving[i]) noPedal += P.dt;
         kj += P.watts[i] * P.dt / 1000;
-        if (P.hr && P.hr[i] > 0) { hrS += P.hr[i]; hrK++; if (P.hr[i] > hrMax) hrMax = P.hr[i]; }
+        if (hq && hq.valid[i]) { hrS += P.hr[i]; hrK++; if (P.hr[i] > hrMax) hrMax = P.hr[i]; }
       }
+      // A lap's HR only counts when most of the lap was actually read.
+      const hrShare = hrK / Math.max(1, i1 - i0 + 1);
+      const hrLap = hrK > 0 && hrShare >= 0.8;
       let featureSeconds = 0, featureCost = 0;
       for (const f of featureRows) {
         const inst = f.perLap[k];
@@ -740,7 +780,9 @@ const Analyzer = (() => {
         bobbleCost, bobbles: bobbles.filter(b => b.lap === k + 1).length,
         kj, avgW: P.hasPower ? kj * 1000 / Math.max(1, seconds) : NaN,
         np: P.hasPower ? Physics.normalizedPower(P.watts.subarray(i0, i1 + 1), P.dt) : NaN,
-        avgHr: hrK ? hrS / hrK : NaN, maxHr: hrMax || NaN,
+        avgHr: hrLap ? hrS / hrK : NaN, maxHr: hrLap ? hrMax : NaN, hrShare,
+        // Metres per heartbeat: the one fitness proxy that needs no power meter.
+        metresPerBeat: hrLap && seconds > 0 ? (metres / seconds) * 60 / (hrS / hrK) : NaN,
       });
     }
     return rows;
@@ -918,9 +960,202 @@ const Analyzer = (() => {
     };
   }
 
+  // ── Heart rate ────────────────────────────────────────────────────────────
+
+  const HR_LAG = 15;          // s the heart trails the legs, for attributing HR to riding vs running
+  const HR_WINDOW = 40;       // s after a feature's exit in which its HR peak is looked for
+  const HR_SETTLE_CAP = 90;   // s — a settle longer than this is reported as "did not settle"
+
+  /**
+   * Per-sample mask of believable heart rate. A strap that has not wetted, or
+   * has lost contact, reads low and flat; a racer's heart does not sit at
+   * 60% of its maximum for a minute while riding at race pace. Suspect
+   * samples are those below a floor set from the race's own maximum while
+   * the rider is moving faster than running pace; a minute that is mostly
+   * suspect is thrown out, and the hole is widened to the nearest samples
+   * that look right again.
+   */
+  function hrQuality(P, laps, cfg) {
+    if (!P.hasHr) return null;
+    const n = P.n;
+    const i0 = laps[0].i0, i1 = laps[laps.length - 1].i1;
+    let mx = 0;
+    for (let i = i0; i <= i1; i++) if (P.hr[i] > mx) mx = P.hr[i];
+    const floor = Math.max(90, 0.62 * mx);
+    const susp = new Uint8Array(n);
+    for (let i = 0; i < n; i++) susp[i] = (P.hr[i] <= 30 || (P.hr[i] < floor && P.v[i] > cfg.runSpeed)) ? 1 : 0;
+    const valid = new Uint8Array(n);
+    for (let i = 0; i < n; i++) valid[i] = P.hr[i] > 30 ? 1 : 0;
+    // Any 60 s window that is 80% suspect is a dropout.
+    const W = Math.round(60 / P.dt), need = Math.ceil(W * 0.8);
+    let run = 0;
+    for (let i = 0; i < n; i++) {
+      run += susp[i];
+      if (i >= W) run -= susp[i - W];
+      if (i >= W - 1 && run >= need) for (let k = i - W + 1; k <= i; k++) valid[k] = 0;
+    }
+    // Widen each hole while the reading is still below the floor.
+    for (let i = 0; i < n; i++) {
+      if (valid[i] || (i > 0 && !valid[i - 1])) continue;
+      for (let k = i - 1; k >= 0 && P.hr[k] < floor; k--) valid[k] = 0;
+    }
+    for (let i = n - 1; i >= 0; i--) {
+      if (valid[i] || (i < n - 1 && !valid[i + 1])) continue;
+      for (let k = i + 1; k < n && P.hr[k] < floor; k++) valid[k] = 0;
+    }
+    const spans = [];
+    for (let i = 0; i < n; i++) {
+      if (valid[i]) continue;
+      let k = i; while (k + 1 < n && !valid[k + 1]) k++;
+      if ((k - i + 1) * P.dt >= 20) spans.push({ i0: i, i1: k, seconds: (k - i + 1) * P.dt, t0: P.t[i], t1: P.t[k] });
+      i = k;
+    }
+    let s = 0, c = 0, m = 0, total = 0;
+    for (let i = i0; i <= i1; i++) { total++; if (valid[i]) { s += P.hr[i]; c++; if (P.hr[i] > m) m = P.hr[i]; } }
+    // Only the holes inside the race are reported; an easy pre-ride at 110
+    // bpm looks like a dry strap to this test and is nobody's business.
+    const inRace = spans
+      .map(x => ({ i0: Math.max(x.i0, i0), i1: Math.min(x.i1, i1) }))
+      .filter(x => x.i1 >= x.i0 && (x.i1 - x.i0 + 1) * P.dt >= 20)
+      .map(x => ({ ...x, seconds: (x.i1 - x.i0 + 1) * P.dt, t0: P.t[x.i0], t1: P.t[x.i1] }));
+    return {
+      valid, spans: inRace, floor,
+      avgHr: c ? s / c : NaN, maxHr: m || NaN,
+      validShare: total ? c / total : 0,
+      invalidSeconds: inRace.reduce((a, x) => a + x.seconds, 0),
+    };
+  }
+
+  /**
+   * Everything the heart says about the race, read only through the dropout
+   * mask. Threshold and max come from the rider numbers when they are set,
+   * else max from the race itself and threshold stays unknown — a percentage
+   * of max is honest, an invented LTHR is not.
+   */
+  function summariseEffort(P, laps, aligned, ml, featureRows, lapRows, grid, hq, cfg) {
+    const i0 = laps[0].i0, i1 = laps[laps.length - 1].i1;
+    const V = hq.valid;
+    const maxHr = cfg.maxHr > 0 ? cfg.maxHr : hq.maxHr;
+    const maxSource = cfg.maxHr > 0 ? (cfg.fitnessSource && cfg.fitnessSource.maxHr) || 'you' : 'race';
+    const lthr = cfg.lthr > 0 ? cfg.lthr : NaN;
+
+    let aboveLthr = 0, above90 = 0, validS = 0;
+    for (let i = i0; i <= i1; i++) {
+      if (!V[i]) continue;
+      validS += P.dt;
+      if (isFinite(lthr) && P.hr[i] >= lthr) aboveLthr += P.dt;
+      if (P.hr[i] >= 0.9 * maxHr) above90 += P.dt;
+    }
+
+    // Zones: the file's own boundaries when it has them, else nothing — a
+    // zone chart built on a guessed threshold would just be decoration.
+    let zones = null;
+    const bounds = Array.isArray(cfg.hrZones) && cfg.hrZones.length >= 3 ? cfg.hrZones : null;
+    if (bounds) {
+      const secs = new Array(bounds.length).fill(0);
+      for (let i = i0; i <= i1; i++) {
+        if (!V[i]) continue;
+        let z = bounds.findIndex(b => P.hr[i] < b);
+        if (z < 0) z = bounds.length - 1;
+        secs[z] += P.dt;
+      }
+      zones = bounds.map((b, k) => ({ zone: k + 1, lo: k ? bounds[k - 1] : 0, hi: b, seconds: secs[k], share: validS ? secs[k] / validS : 0 }));
+    }
+
+    // Lap by lap, and the first-half/second-half decoupling of speed from HR.
+    const hrLaps = lapRows.filter(r => isFinite(r.metresPerBeat));
+    let decoupling = NaN, mpbFirst = NaN, mpbLast = NaN, hrFirst = NaN, hrLast = NaN, vFirst = NaN, vLast = NaN;
+    if (hrLaps.length >= 4) {
+      const half = Math.floor(hrLaps.length / 2);
+      const a = hrLaps.slice(0, half), b = hrLaps.slice(hrLaps.length - half);
+      mpbFirst = Physics.mean(a.map(r => r.metresPerBeat)); mpbLast = Physics.mean(b.map(r => r.metresPerBeat));
+      hrFirst = Physics.mean(a.map(r => r.avgHr)); hrLast = Physics.mean(b.map(r => r.avgHr));
+      vFirst = Physics.mean(a.map(r => r.avgV)); vLast = Physics.mean(b.map(r => r.avgV));
+      decoupling = mpbFirst > 0 ? (mpbFirst - mpbLast) / mpbFirst : NaN;
+    }
+
+    // The start: how fast the heart was driven to the ceiling, and whether
+    // the first stretch of lap 1 was quicker than the same stretch later.
+    let start = null;
+    {
+      const S0 = Math.min(P.n - 1, i0 + Math.round(90 / P.dt));
+      let ok = 0; for (let i = i0; i <= S0; i++) if (V[i]) ok++;
+      // Only with an unbroken reading from the line: a hole before the heart
+      // reached its ceiling makes "time to 95%" the time to the end of the hole.
+      if (ok >= (S0 - i0 + 1) * 0.98 && lapRows.length >= 3) {
+        let to90 = NaN, to95 = NaN, broken = false;
+        for (let i = i0; i <= i1; i++) {
+          if (!V[i]) { broken = true; break; }
+          if (!isFinite(to90) && P.hr[i] >= 0.9 * maxHr) to90 = P.t[i] - P.t[i0];
+          if (P.hr[i] >= 0.95 * maxHr) { to95 = P.t[i] - P.t[i0]; break; }
+        }
+        if (broken) to95 = NaN;
+        const i60 = Math.min(i1, i0 + Math.round(60 / P.dt));
+        let firstSector = NaN, medianSector = NaN;
+        if (grid && grid.grid && grid.grid.length >= 3) {
+          const col0 = grid.grid.map(row => row.cells[0]).filter(c => c && isFinite(c.seconds));
+          if (col0.length >= 3) { firstSector = col0[0].seconds; medianSector = median(col0.map(c => c.seconds)); }
+        }
+        if (isFinite(to95)) start = { to90, to95, hrAt60: V[i60] ? P.hr[i60] : NaN, hrStart: V[i0] ? P.hr[i0] : NaN,
+          firstSector, medianSector, firstSectorDelta: firstSector - medianSector, sectorLabel: grid && grid.labels ? grid.labels[0] : '' };
+      }
+    }
+
+    // HR while on foot against HR while riding, with the heart's lag applied
+    // so the beats are charged to the legs that caused them.
+    let footS = 0, footK = 0, rideS = 0, rideK = 0;
+    const lag = Math.round(HR_LAG / P.dt);
+    for (let i = i0; i + lag <= i1; i++) {
+      const h = i + lag;
+      if (!V[h]) continue;
+      if (P.v[i] < cfg.runSpeed) { footS += P.hr[h]; footK++; } else { rideS += P.hr[h]; rideK++; }
+    }
+
+    // Recovery after the line: the drop in the first minute after the race,
+    // if the recording went on that long.
+    let finish = null;
+    {
+      const e = i1 + Math.round(60 / P.dt);
+      if (e < P.n && V[i1] && V[e]) finish = { hrEnd: P.hr[i1], hrPlus60: P.hr[e], drop: P.hr[i1] - P.hr[e] };
+    }
+
+    // HR along the lap, per lap and the median — on the mean-lap grid, not
+    // lag-shifted, because *where* the heart peaks on the course is the point.
+    let hrAlong = null, perLap = [];
+    if (ml && aligned) {
+      perLap = aligned.map(al => {
+        const o = new Float64Array(ml.n);
+        for (let j = 0; j < ml.n; j++) { const i = al.idxAt[j]; o[j] = i >= 0 && V[i] ? P.hr[i] : NaN; }
+        return o;
+      });
+      hrAlong = new Float64Array(ml.n);
+      for (let j = 0; j < ml.n; j++) {
+        const vals = perLap.map(a => a[j]).filter(isFinite);
+        hrAlong[j] = vals.length ? median(vals) : NaN;
+      }
+    }
+
+    const placed = featureRows.filter(f => f.j0 >= 0 && !f.offCourse && f.hrN >= 2);
+    const spiky = placed.filter(f => isFinite(f.medianHrRise)).sort((a, b) => b.medianHrRise - a.medianHrRise)[0] || null;
+
+    return {
+      avgHr: hq.avgHr, maxHrRace: hq.maxHr, maxHr, maxSource, lthr, restHr: cfg.restHr || NaN, floor: hq.floor,
+      pctMax: maxHr > 0 ? hq.avgHr / maxHr : NaN,
+      aboveLthr, above90, validSeconds: validS, validShare: hq.validShare, dropouts: hq.spans, invalidSeconds: hq.invalidSeconds,
+      zones,
+      hrLaps: hrLaps.length, decoupling, mpbFirst, mpbLast, hrFirst, hrLast, vFirst, vLast, hrDrift: hrLast - hrFirst,
+      metresPerBeat: hrLaps.length ? median(hrLaps.map(r => r.metresPerBeat)) : NaN,
+      start,
+      footHr: footK >= 30 ? footS / footK : NaN, rideHr: rideK >= 60 ? rideS / rideK : NaN,
+      finish,
+      hrAlong, perLap,
+      spikiest: spiky ? spiky.id : null,
+    };
+  }
+
   // ── Summary and findings ──────────────────────────────────────────────────
 
-  function summarise(P, laps, rows, featureRows, bobbles, shape, cfg) {
+  function summarise(P, laps, rows, featureRows, bobbles, shape, cfg, hq) {
     const real = laps[0] && laps[0].source !== 'none';
     const i0 = real ? laps[0].i0 : 0, i1 = real ? laps[laps.length - 1].i1 : P.n - 1;
     const seconds = P.t[i1] - P.t[i0];
@@ -945,7 +1180,8 @@ const Analyzer = (() => {
       topFeature: top ? top.label : null, topFeatureLost: top ? top.lostVsBest : 0,
       costliest: costly ? costly.label : null, costliestSeconds: costly ? costly.medianCost : NaN,
       hasPower: P.hasPower, hasHr: P.hasHr, hasCad: P.hasCad,
-      avgHr: P.hasHr ? meanRange(P.hr, i0, i1) : NaN,
+      avgHr: hq ? hq.avgHr : NaN, maxHr: hq ? hq.maxHr : NaN,
+      metresPerBeat: hq ? median(rows.map(r => r.metresPerBeat).filter(isFinite)) : NaN,
       kj: P.hasPower ? rows.reduce((a, r) => a + r.kj, 0) : NaN,
     };
   }
@@ -956,8 +1192,10 @@ const Analyzer = (() => {
    * more across the race than if you had done them all like lap 2" is a fact
    * the rider can go and practise.
    */
-  function buildFindings(P, rows, featureRows, bobbles, grid, shape, S, cfg) {
+  function buildFindings(P, rows, featureRows, bobbles, grid, shape, S, cfg, E) {
     const out = [];
+    const bpm = x => Math.round(x) + ' bpm';
+    const clock = x => { x = Math.round(x); return Math.floor(x / 60) + ':' + String(x % 60).padStart(2, '0'); };
     const placed = featureRows.filter(f => f.j0 >= 0 && !f.offCourse && f.n >= 2);
     const sec = x => (isFinite(x) ? (Math.abs(x) >= 10 ? x.toFixed(0) : x.toFixed(1)) : '—') + ' s';
     const kmh = v => (v * 3.6).toFixed(1) + ' km/h';
@@ -1036,16 +1274,22 @@ const Analyzer = (() => {
           fmtKm(b.s) + ' km into the lap, ' + sec(b.cost) + '. They are drawn on the course map; if one of them is a feature you have not placed yet, place it and it stops counting as a bobble.' });
     }
 
-    // 6. Fade, and where it came from.
+    // 6. Fade, and where it came from — and what the heart was doing while it happened.
     if (shape.kind === 'faded' && shape.drift > 3) {
       const fShare = shape.drift > 0 ? Math.max(0, Math.min(1, shape.featureDrift / shape.drift)) : 0;
+      let heart = '';
+      if (E && isFinite(E.hrDrift)) {
+        heart = E.hrDrift >= -2
+          ? ' Heart rate held at ' + bpm(E.hrLast) + ' through the second half against ' + bpm(E.hrFirst) + ' in the first: the engine was still at the limit while the speed fell, which is fatigue, and the fix is fitness.'
+          : ' Heart rate fell too, from ' + bpm(E.hrFirst) + ' to ' + bpm(E.hrLast) + ': the heart had room left, so it was not the engine that gave out — legs, grip or the head.';
+      }
       out.push({ kind: 'fade', severity: shape.pct > 0.06 ? 'serious' : 'info', seconds: shape.drift * shape.laps / 2,
         title: 'You faded by ' + sec(shape.drift) + ' a lap',
         body: 'The second half of the race averaged ' + sec(shape.drift) + ' a lap slower than the first. ' +
           (placed.length
             ? Math.round(fShare * 100) + '% of that came from the features and ' + Math.round((1 - fShare) * 100) + '% from the riding between them' +
               (fShare > 0.6 ? ' — the technique went before the legs did.' : fShare < 0.3 ? ' — the legs went, the technique held.' : '.')
-            : 'Place the features to see whether it was the legs or the technique.') });
+            : 'Place the features to see whether it was the legs or the technique.') + heart });
     } else if (shape.kind === 'built' && shape.drift < -3) {
       out.push({ kind: 'fade', severity: 'info', seconds: 0,
         title: 'You got faster as it went on',
@@ -1065,6 +1309,53 @@ const Analyzer = (() => {
           title: 'Sector ' + worst.label + ' km is where laps go wrong',
           body: 'It was your worst sector, against your own median, on ' + worst.lapsWorst + ' of ' + grid.grid.length +
             ' laps, and ' + sec(worst.lost) + ' slower in total than your best pass through it. If there is no feature marked there, there probably should be.' });
+      }
+    }
+
+    // 8. What the heart says. These rank by seconds like everything else;
+    //    the ones with no seconds attached sit at the bottom as context.
+    if (E) {
+      const drop = E.dropouts.filter(d => d.seconds >= 60);
+      if (drop.length && E.invalidSeconds >= 60) {
+        const d = drop.slice().sort((a, b) => b.seconds - a.seconds)[0];
+        const lapsHit = rows.filter(r => !isFinite(r.avgHr)).map(r => r.lap);
+        out.push({ kind: 'hr-dropout', severity: 'warn', seconds: 0,
+          title: 'Heart-rate strap was not reading for ' + clock(E.invalidSeconds),
+          body: 'From ' + clock(d.t0) + ' to ' + clock(d.t1) + ' the strap read under ' + bpm(E.floor) + ' while you were riding at race pace, which is not a heart rate, it is a dry strap. ' +
+            (lapsHit.length ? 'Lap' + (lapsHit.length > 1 ? 's ' : ' ') + lapsHit.join(', ').replace(/, (\d+)$/, ' and $1') + ' therefore ' + (lapsHit.length > 1 ? 'have' : 'has') + ' no heart-rate figures; ' : '') +
+            'every HR number on this page uses only the samples that look real.' });
+      }
+      const spiky = featureRows.find(f => f.id === E.spikiest);
+      if (spiky && spiky.medianHrRise >= 5) {
+        const settled = spiky.medianHrSettle < HR_SETTLE_CAP;
+        out.push({ kind: 'hr-feature', severity: 'info', seconds: 0, feature: spiky.id,
+          title: spiky.label + ' lifts your heart rate ' + Math.round(spiky.medianHrRise) + ' bpm',
+          body: 'Into it at ' + bpm(spiky.medianHrIn) + ', peaking at ' + bpm(spiky.medianHrPeak) +
+            (spiky.medianHrPeakLag > 0 ? ' about ' + Math.round(spiky.medianHrPeakLag) + ' s after the exit' : ' before the exit') + ', ' +
+            (settled ? 'and ' + Math.round(spiky.medianHrSettle) + ' s to come back down.' : 'and it did not come back down before the next effort.') +
+            ' That bill is paid in the sector after the ' + spiky.label.toLowerCase() + ': if that sector is where your laps go wrong, this is why.' });
+      }
+      if (isFinite(E.decoupling) && E.hrLaps >= 4 && Math.abs(E.decoupling) >= 0.03) {
+        const pct = Math.round(Math.abs(E.decoupling) * 100);
+        out.push({ kind: 'hr-decoupling', severity: E.decoupling > 0.06 ? 'warn' : 'info', seconds: 0,
+          title: E.decoupling > 0 ? 'Decoupled ' + pct + '%: each heartbeat bought less ground as the race went on' : 'Each heartbeat bought ' + pct + '% more ground in the second half',
+          body: 'First half: ' + E.mpbFirst.toFixed(2) + ' m per beat at ' + bpm(E.hrFirst) + '. Second half: ' + E.mpbLast.toFixed(2) + ' m per beat at ' + bpm(E.hrLast) + '. ' +
+            (E.decoupling > 0
+              ? 'The same speed cost more beats, or the same beats bought less speed — the aerobic ceiling for a race this long. Longer threshold work moves it; so does not spending the first lap at ' + (E.start && isFinite(E.start.hrAt60) ? bpm(E.start.hrAt60) : 'the ceiling') + '.'
+              : 'You were more economical late than early, which usually means the start was harder than the race needed.') });
+      }
+      if (E.start && isFinite(E.start.to95) && E.start.to95 <= 120) {
+        const d = E.start.firstSectorDelta;
+        out.push({ kind: 'hr-start', severity: 'info', seconds: 0,
+          title: 'To 95% of max in ' + clock(E.start.to95),
+          body: 'From ' + bpm(E.start.hrStart) + ' on the line to ' + Math.round(0.95 * E.maxHr) + ' bpm in ' + clock(E.start.to95) + '.' +
+            (isFinite(d) ? ' The first sector of lap 1 (' + E.start.sectorLabel + ' km) took ' + sec(E.start.firstSector) + ', ' + (d < -0.5 ? sec(-d) + ' quicker than' : d > 0.5 ? sec(d) + ' slower than' : 'the same as') + ' your median for it.' : '') +
+            ' A cross start is a sprint by design; the question is only whether you paid for it on lap 2.' });
+      }
+      if (E.finish && isFinite(E.finish.drop)) {
+        out.push({ kind: 'hr-finish', severity: 'info', seconds: 0,
+          title: 'Heart rate fell ' + Math.round(E.finish.drop) + ' bpm in the minute after the line',
+          body: bpm(E.finish.hrEnd) + ' at the finish, ' + bpm(E.finish.hrPlus60) + ' a minute later. A bigger drop week on week is fitness arriving; a smaller one on the same course is fatigue you brought to the race.' });
       }
     }
 
@@ -1111,7 +1402,8 @@ const Analyzer = (() => {
       laps: s.laps, seconds: s.seconds, bestLap: s.bestLapSeconds, medianLap: s.medianLap,
       avgV: s.avgV, onFoot: s.onFoot, stopped: s.stopped,
       featureShare: s.featureShare, lostVsBest: s.lostVsBest, bobbleCost: s.bobbleCost,
-      avgW: A.power ? A.power.avg : NaN, avgHr: s.avgHr,
+      avgW: A.power ? A.power.avg : NaN, avgHr: s.avgHr, metresPerBeat: s.metresPerBeat,
+      decoupling: A.effort ? A.effort.decoupling : NaN,
       shape: A.shape, circuit: A.circuit,
       features: A.features.filter(f => f.j0 >= 0).map(f => ({ label: f.label, type: f.type, median: f.median, best: f.best, cost: f.medianCost, lost: f.lostVsBest })),
     };
@@ -1159,7 +1451,7 @@ const Analyzer = (() => {
   }
 
   return {
-    run, FEATURE_TYPES,
+    run, FEATURE_TYPES, hrQuality, summariseEffort,
     detectLaps, lapsFromAnchor, anchorCandidates, nearestTrackIndex, detectRaceWindow, buildMeanLap, nearestMeanIndex,
     alignLap, resolveFeatures, analyseFeatures, buildSegments, detectBobbles, sectorGrid,
     deltaTraces, suggestFeatures, raceShape, summarise, buildFindings,

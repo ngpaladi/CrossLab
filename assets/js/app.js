@@ -17,6 +17,7 @@
     featureMetric: 'lost',
     cmpMetric: 'bestLap',
     activeFeature: null,  // feature id selected in the Features tab
+    mapColor: 'speed',    // course map colouring: speed | hr | lost
     traceLap: null,       // lap highlighted on the Trace tab, or null for all
     replay: { idx: 0, timer: null },
     busy: false,
@@ -34,7 +35,11 @@
     cxStopSpeed:     { fmt: v => (v * 3.6).toFixed(1) + ' km/h' },
     cxBobbleSeconds: { fmt: v => v.toFixed(1) + ' s' },
     cxSectorCount:   { fmt: v => String(Math.round(v)) },
+    cxLthr:          { fmt: v => Math.round(v) + ' bpm' },
+    cxMaxHr:         { fmt: v => Math.round(v) + ' bpm' },
   };
+  // Rider numbers the activity can supply; moving the slider makes it yours.
+  const FROM_FILE = ['ftp', 'cp', 'wPrime', 'cxLthr', 'cxMaxHr'];
 
   // ── Boot ──────────────────────────────────────────────────────────────────
 
@@ -220,14 +225,14 @@
         const v = parseFloat(input.value);
         val.textContent = spec.fmt(v);
         const patch = { [key]: v };
-        if (key === 'ftp' || key === 'cp' || key === 'wPrime') patch[key + 'UserSet'] = true;
+        if (FROM_FILE.includes(key)) patch[key + 'UserSet'] = true;
         Settings.set(patch);
-        if (key === 'ftp' || key === 'cp' || key === 'wPrime') $('fitness-reset').style.display = '';
+        if (FROM_FILE.includes(key)) $('fitness-reset').style.display = '';
         recomputeSoon();
       });
     }
     $('fitness-reset').addEventListener('click', () => {
-      Settings.set({ ftpUserSet: false, cpUserSet: false, wPrimeUserSet: false });
+      Settings.set({ ftpUserSet: false, cpUserSet: false, wPrimeUserSet: false, cxLthrUserSet: false, cxMaxHrUserSet: false });
       $('fitness-reset').style.display = 'none';
       recompute();
     });
@@ -270,12 +275,17 @@
     const cfg = entry.A.cfg;
     const put = (key, v) => { const i = $('in-' + key); if (!i) return; i.value = v; $('v-' + key).textContent = RAIL[key].fmt(v); };
     put('ftp', cfg.ftp); put('cp', cfg.cp); put('wPrime', cfg.wPrime);
+    const E = entry.A.effort;
+    if (cfg.lthr > 0) put('cxLthr', cfg.lthr);
+    if (cfg.maxHr > 0) put('cxMaxHr', cfg.maxHr); else if (E && E.maxHr > 0) put('cxMaxHr', E.maxHr);
     const src = cfg.fitnessSource;
-    const word = { you: 'yours', file: 'from the activity', default: 'default' };
+    const word = { you: 'yours', file: 'from the activity', default: 'default', race: 'highest in this race', unknown: 'not set — slide to set' };
     $('src-ftp').textContent = '· ' + word[src.ftp];
     $('src-cp').textContent = '· ' + word[src.cp];
     $('src-wPrime').textContent = '· ' + word[src.wPrime];
-    $('fitness-reset').style.display = (src.ftp === 'you' || src.cp === 'you' || src.wPrime === 'you') ? '' : 'none';
+    $('src-cxLthr').textContent = '· ' + word[src.lthr];
+    $('src-cxMaxHr').textContent = '· ' + word[src.maxHr];
+    $('fitness-reset').style.display = Object.values(src).some(v => v === 'you') ? '' : 'none';
   }
 
   // ── Tabs ──────────────────────────────────────────────────────────────────
@@ -565,6 +575,10 @@
       recompute();
     });
     $('copy-features').addEventListener('click', () => copyFeaturesPrompt());
+    $('map-color').querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
+      state.mapColor = b.dataset.color;
+      renderCoursePanel();
+    }));
     $('map-zoom-in').addEventListener('click', () => Charts.courseMapZoom($('map-main'), 1.8));
     $('map-zoom-out').addEventListener('click', () => Charts.courseMapZoom($('map-main'), 1 / 1.8));
     $('map-zoom-fit').addEventListener('click', () => Charts.courseMapZoom($('map-main'), 0));
@@ -921,7 +935,10 @@
     out.push(stat(Charts.fmtClock(S.onFoot), '', 'on foot', S.seconds ? Math.round(S.onFoot / S.seconds * 100) + '% of the race' : ''));
     out.push(stat(S.bobbleCost.toFixed(0), 's', 'unplanned stops', S.bobbles ? S.bobbles + ' of them' : 'none'));
     if (S.hasPower && entry.A.power) out.push(stat(Math.round(entry.A.power.avg), 'W', 'average power', 'NP ' + Math.round(entry.A.power.np) + ' W'));
-    if (S.hasHr) out.push(stat(Math.round(S.avgHr), 'bpm', 'average HR'));
+    if (S.hasHr && isFinite(S.avgHr)) {
+      const E = entry.A.effort;
+      out.push(stat(Math.round(S.avgHr), 'bpm', 'average HR', E && isFinite(E.pctMax) ? Math.round(E.pctMax * 100) + '% of max · ' + (isFinite(S.metresPerBeat) ? S.metresPerBeat.toFixed(2) + ' m per beat' : '') : ''));
+    }
     $('stat-row').innerHTML = out.join('');
   }
 
@@ -1021,8 +1038,8 @@
         break;
       }
 
-      case 'power':
-        renderPowerPanel(P, A);
+      case 'effort':
+        renderEffortPanel(P, A);
         break;
 
       case 'replay':
@@ -1052,6 +1069,7 @@
       onPick: pk ? hit => onMapPick(entry, hit) : null,
       pending: pk && pk.what === 'feature' ? pk.entry : null,
       activeFeature: state.activeFeature,
+      colorBy: state.mapColor,
       viewKey: entry.id,
       onView: v => {
         $('map-zoom-fit').disabled = v.k <= 1;
@@ -1081,14 +1099,28 @@
       hint.style.display = 'none';
     }
 
-    // Legend.
+    // Legend, for whichever colouring the map is using.
     const medV = Charts.medianSpeedAlong(A);
+    const sc = $('map-main')._clColorScale || { by: 'speed' };
+    $('map-color').querySelectorAll('button').forEach(b => {
+      b.classList.toggle('active', b.dataset.color === sc.by);
+      b.disabled = (b.dataset.color === 'hr' && !(A.effort && A.effort.hrAlong)) || (b.dataset.color === 'lost' && !(A.aligned && A.aligned.length >= 2));
+    });
+    $('map-title').textContent = sc.by === 'hr' ? 'The course, coloured by your typical heart rate'
+      : sc.by === 'lost' ? 'The course, coloured by where the time went'
+      : 'The course, coloured by how fast you typically were';
     let lg = '';
-    if (medV) {
+    const ramp = fn => [0, 0.25, 0.5, 0.75, 1].map(f => '<span class="legend-key" style="background:' + fn(f) + '"></span>').join('');
+    if (sc.by === 'hr') {
+      lg += '<span class="legend-item">' + ramp(f => Charts.speedColor(sc.hi + sc.lo - (sc.lo + (sc.hi - sc.lo) * f), sc.lo, sc.hi)) +
+        ' ' + Math.round(sc.lo) + ' → ' + Math.round(sc.hi) + ' bpm, median over laps</span>';
+    } else if (sc.by === 'lost') {
+      lg += '<span class="legend-item">' + ramp(f => Charts.deltaColor(sc.hi * f, sc.hi)) +
+        ' 0 → ' + (sc.hi * 10).toFixed(1) + ' s per 10 m lost against your quickest lap through each metre, all laps</span>';
+    } else if (medV) {
       const sorted = Array.from(medV).filter(isFinite).sort((a, b) => a - b);
       const lo = Physics.percentile(sorted, 0.05), hi = Physics.percentile(sorted, 0.95);
-      lg += '<span class="legend-item">' + [0, 0.25, 0.5, 0.75, 1].map(f =>
-        '<span class="legend-key" style="background:' + Charts.speedColor(lo + (hi - lo) * f, lo, hi) + '"></span>').join('') +
+      lg += '<span class="legend-item">' + ramp(f => Charts.speedColor(lo + (hi - lo) * f, lo, hi)) +
         ' ' + (lo * 3.6).toFixed(0) + ' → ' + (hi * 3.6).toFixed(0) + ' km/h, median over laps</span>';
     }
     lg += key('#fab219', 'unplanned stop (×)') + key(Charts.INK.text, 'start/finish', 'line');
@@ -1241,41 +1273,81 @@
         '</tr>').join('') + '</tbody></table>';
   }
 
-  function renderPowerPanel(P, A) {
-    const st = $('power-stats');
-    if (!P.hasPower && !P.hasHr) {
+  function renderEffortPanel(P, A) {
+    const st = $('effort-stats');
+    const E = A.effort, pw = A.power;
+    const bpm = x => isFinite(x) ? Math.round(x) : '—';
+    const clock = x => isFinite(x) ? Charts.fmtClock(x) : '—';
+
+    if (!E) {
       st.innerHTML = '';
-      $('power-table').innerHTML = '<div class="table-empty">No power or heart-rate data in this ride.</div>';
-      Charts.wbalChart($('wbal'), P, A, { height: 200 });
-      $('wbal-sub').textContent = ''; $('wbal-legend').innerHTML = '';
-      return;
+      $('hr-sub').textContent = '';
+      Charts.hrTrace($('hr-trace'), A, { height: 240 });
+      $('hr-legend').innerHTML = '';
+      $('hr-feature-card').style.display = 'none';
+      $('hr-zone-card').style.display = 'none';
+      $('effort-table').innerHTML = '<div class="table-empty">No heart-rate data in this ride' + (P.hasPower ? '; power is below.' : '.') + '</div>';
+    } else {
+      const out = [];
+      out.push(stat(bpm(E.avgHr), 'bpm', 'average', isFinite(E.pctMax) ? Math.round(E.pctMax * 100) + '% of max ' + Math.round(E.maxHr) + (E.maxSource === 'race' ? ' (this race)' : '') : ''));
+      out.push(stat(bpm(E.maxHrRace), 'bpm', 'highest', E.maxHr > E.maxHrRace + 2 ? 'max set to ' + Math.round(E.maxHr) : 'that is your max for today'));
+      if (isFinite(E.lthr)) out.push(stat(clock(E.aboveLthr), '', 'above threshold', Math.round(E.aboveLthr / Math.max(1, E.validSeconds) * 100) + '% of the race · LTHR ' + Math.round(E.lthr)));
+      else out.push(stat(clock(E.above90), '', 'at 90% of max or more', Math.round(E.above90 / Math.max(1, E.validSeconds) * 100) + '% of the race'));
+      out.push(stat(isFinite(E.metresPerBeat) ? E.metresPerBeat.toFixed(2) : '—', 'm', 'per heartbeat', E.hrLaps ? 'median of ' + E.hrLaps + ' laps' : 'no clean laps'));
+      if (isFinite(E.decoupling)) out.push(stat((E.decoupling > 0 ? '+' : '') + Math.round(E.decoupling * 100), '%', 'decoupling', 'beats per metre, 2nd half vs 1st'));
+      if (isFinite(E.footHr) && isFinite(E.rideHr)) out.push(stat('+' + Math.round(E.footHr - E.rideHr), 'bpm', 'on foot vs riding', bpm(E.footHr) + ' running · ' + bpm(E.rideHr) + ' riding'));
+      if (E.start) out.push(stat(clock(E.start.to95), '', 'to 95% of max', 'from ' + bpm(E.start.hrStart) + ' bpm on the line'));
+      if (E.finish) out.push(stat('−' + Math.round(E.finish.drop), 'bpm', 'first minute after the line', bpm(E.finish.hrEnd) + ' → ' + bpm(E.finish.hrPlus60)));
+      if (E.invalidSeconds >= 60) out.push(stat(clock(E.invalidSeconds), '', 'strap not reading', 'ignored in every figure here'));
+      st.innerHTML = out.join('');
+
+      Charts.hrTrace($('hr-trace'), A, { height: 260, lthr: E.lthr, maxHr: E.maxHr });
+      $('hr-sub').textContent = 'median over laps in white' + (isFinite(E.lthr) ? ' · dashed line is threshold' : '');
+      $('hr-legend').innerHTML = lapLegend(A);
+
+      // Features.
+      const feats = A.features.filter(f => f.j0 >= 0 && !f.offCourse && f.hrN >= 1);
+      $('hr-feature-card').style.display = A.features.length ? '' : 'none';
+      $('hr-feature-table').innerHTML = feats.length
+        ? '<table class="data"><thead><tr><th></th><th>Feature</th><th>In</th><th>Peak</th><th>Rise</th><th>Peak after exit</th><th>Settle</th><th>Laps</th></tr></thead><tbody>' +
+          feats.map((f, k) => '<tr' + (f.id === E.spikiest ? ' class="active"' : '') + '><td><span class="pin-key" style="background:' + f.color + '">' + (A.features.indexOf(f) + 1) + '</span></td>' +
+            '<td>' + Charts.esc(f.label) + '</td><td>' + bpm(f.medianHrIn) + '</td><td>' + bpm(f.medianHrPeak) + '</td>' +
+            '<td><b>' + (f.medianHrRise >= 0 ? '+' : '') + Math.round(f.medianHrRise) + '</b> bpm</td>' +
+            '<td class="dim">' + (f.medianHrPeakLag >= 0 ? Math.round(f.medianHrPeakLag) + ' s' : 'before exit') + '</td>' +
+            '<td>' + (f.medianHrSettle >= 90 ? '<span class="tag tag-warm">did not settle</span>' : Math.round(f.medianHrSettle) + ' s') + '</td>' +
+            '<td class="dim">' + f.hrN + '</td></tr>').join('') + '</tbody></table>'
+        : '<div class="table-empty">No feature had a clean heart-rate reading on enough laps.</div>';
+
+      // Zones, only from the file's own boundaries.
+      const zc = $('hr-zone-card');
+      if (E.zones) {
+        zc.style.display = '';
+        const mx = Math.max(0.01, ...E.zones.map(z => z.share));
+        const col = ['#6da7ec', '#199e70', '#c98500', '#d95926', '#e66767', '#d55181', '#a78bfa'];
+        $('hr-zone-sub').textContent = 'zone boundaries from the activity';
+        $('hr-zones').innerHTML = E.zones.map((z, k) =>
+          '<div class="zone"><span class="zone-name">Z' + z.zone + '</span><div class="zone-bar"><div class="zone-fill" style="width:' + Math.round(z.share / mx * 100) + '%;background:' + col[k % col.length] + '"></div></div>' +
+          '<span class="zone-val">' + Charts.fmtClock(z.seconds) + ' · ' + Math.round(z.share * 100) + '% · ' + (k ? z.lo : '<') + (k ? '–' : '') + (k === E.zones.length - 1 ? '+' : z.hi) + '</span></div>').join('');
+      } else zc.style.display = 'none';
+
+      $('effort-table').innerHTML = '<table class="data"><thead><tr><th>Lap</th><th>Time</th><th>Speed</th><th>Avg HR</th><th>Max HR</th><th>m / beat</th>' +
+        (P.hasCad ? '<th>No pedalling</th>' : '') + (P.hasPower ? '<th>Avg power</th><th>NP</th>' : '') + '</tr></thead><tbody>' +
+        A.laps.map(r => '<tr><td><span class="pin-key" style="background:' + Charts.lapColor(r.lap) + '">' + r.lap + '</span></td><td>' + Charts.fmtClock(r.seconds) + '</td>' +
+          '<td>' + (r.avgV * 3.6).toFixed(1) + ' km/h</td>' +
+          '<td>' + (isFinite(r.avgHr) ? Math.round(r.avgHr) : '<span class="dim" title="strap not reading for most of this lap">—</span>') + '</td><td>' + (isFinite(r.maxHr) ? Math.round(r.maxHr) : '—') + '</td>' +
+          '<td>' + (isFinite(r.metresPerBeat) ? r.metresPerBeat.toFixed(2) : '—') + '</td>' +
+          (P.hasCad ? '<td>' + r.noPedal.toFixed(0) + ' s</td>' : '') +
+          (P.hasPower ? '<td>' + Math.round(r.avgW) + ' W</td><td>' + Math.round(r.np) + ' W</td>' : '') + '</tr>').join('') + '</tbody></table>';
     }
-    const pw = A.power;
-    const out = [];
+
+    // Power, when there is a meter.
+    $('wbal-card').style.display = pw ? '' : 'none';
     if (pw) {
-      out.push(stat(Math.round(pw.avg), 'W', 'average', 'NP ' + Math.round(pw.np) + ' W'));
-      out.push(stat(Math.round(pw.ridingAvg), 'W', 'while riding', 'outside features'));
-      if (isFinite(pw.featureAvg)) out.push(stat(Math.round(pw.featureAvg), 'W', 'inside features', 'meter reads zero on foot'));
-      out.push(stat(pw.kj.toFixed(0), 'kJ', 'work'));
-      out.push(stat(Math.round(pw.wbalMinPct), '%', "W′ at its lowest", 'of ' + (A.cfg.wPrime / 1000).toFixed(1) + ' kJ'));
-      out.push(stat(pw.tss.toFixed(0), '', 'TSS', 'IF ' + pw.intensity.toFixed(2)));
+      Charts.wbalChart($('wbal'), P, A, { height: 220 });
+      $('wbal-sub').textContent = 'CP ' + Math.round(A.cfg.cp) + ' W · W′ ' + (A.cfg.wPrime / 1000).toFixed(1) + ' kJ · τ ' + Math.round(pw.wbal.tau) + ' s · ' +
+        Math.round(pw.avg) + ' W avg · NP ' + Math.round(pw.np) + ' · ' + Math.round(pw.ridingAvg) + ' W riding' + (isFinite(pw.featureAvg) ? ' · ' + Math.round(pw.featureAvg) + ' W in features' : '');
+      $('wbal-legend').innerHTML = key(Charts.SERIES.wbal.color, "W′ balance", 'line') + '<span class="legend-item">vertical lines = lap starts</span>';
     }
-    if (P.hasHr) {
-      const i0 = A.lapBounds[0].i0, i1 = A.lapBounds[A.lapBounds.length - 1].i1;
-      let mx = 0; for (let i = i0; i <= i1; i++) if (P.hr[i] > mx) mx = P.hr[i];
-      out.push(stat(Math.round(A.summary.avgHr), 'bpm', 'average HR', 'max ' + Math.round(mx)));
-    }
-    st.innerHTML = out.join('');
-    Charts.wbalChart($('wbal'), P, A, { height: 220 });
-    $('wbal-sub').textContent = pw ? 'CP ' + Math.round(A.cfg.cp) + ' W · W′ ' + (A.cfg.wPrime / 1000).toFixed(1) + ' kJ · τ ' + Math.round(pw.wbal.tau) + ' s' : '';
-    $('wbal-legend').innerHTML = pw ? key(Charts.SERIES.wbal.color, "W′ balance", 'line') + '<span class="legend-item">vertical lines = lap starts</span>' : '';
-    // Table reuses the lap table columns most relevant here.
-    $('power-table').innerHTML = '<table class="data"><thead><tr><th>Lap</th><th>Time</th>' +
-      (P.hasPower ? '<th>Avg power</th><th>NP</th><th>kJ</th>' : '') + (P.hasHr ? '<th>Avg HR</th><th>Max HR</th>' : '') + (P.hasCad ? '<th>No pedalling</th>' : '') + '</tr></thead><tbody>' +
-      A.laps.map(r => '<tr><td><span class="pin-key" style="background:' + Charts.lapColor(r.lap) + '">' + r.lap + '</span></td><td>' + Charts.fmtClock(r.seconds) + '</td>' +
-        (P.hasPower ? '<td>' + Math.round(r.avgW) + ' W</td><td>' + Math.round(r.np) + ' W</td><td>' + r.kj.toFixed(0) + '</td>' : '') +
-        (P.hasHr ? '<td>' + (isFinite(r.avgHr) ? Math.round(r.avgHr) : '—') + '</td><td>' + (isFinite(r.maxHr) ? Math.round(r.maxHr) : '—') + '</td>' : '') +
-        (P.hasCad ? '<td>' + r.noPedal.toFixed(0) + ' s</td>' : '') + '</tr>').join('') + '</tbody></table>';
   }
 
   // ── Compare ───────────────────────────────────────────────────────────────
@@ -1293,12 +1365,12 @@
     Charts.compareBars($('cmp-bars'), rows, state.cmpMetric);
     const el = $('cmp-table');
     if (!rows.length) { el.innerHTML = '<div class="table-empty">Tick races in the sidebar to compare them.</div>'; $('cmp-circuits').innerHTML = ''; return; }
-    el.innerHTML = '<table class="data"><thead><tr><th>Race</th><th>Date</th><th>Laps</th><th>Best lap</th><th>Median lap</th><th>Speed</th><th>On foot</th><th>On the table</th><th>Stops</th><th>Power</th><th>HR</th><th>Shape</th></tr></thead><tbody>' +
+    el.innerHTML = '<table class="data"><thead><tr><th>Race</th><th>Date</th><th>Laps</th><th>Best lap</th><th>Median lap</th><th>Speed</th><th>On foot</th><th>On the table</th><th>Stops</th><th>Power</th><th>HR</th><th>m / beat</th><th>Shape</th></tr></thead><tbody>' +
       rows.map(r => '<tr><td>' + Charts.esc(r.name) + '</td><td class="dim">' + (r.date ? r.date.toISOString().slice(0, 10) : '—') + '</td>' +
         '<td>' + r.laps + '</td><td>' + Charts.fmtClock(r.bestLap) + '</td><td>' + Charts.fmtClock(r.medianLap) + '</td>' +
         '<td>' + (r.avgV * 3.6).toFixed(1) + ' km/h</td><td>' + r.onFoot.toFixed(0) + ' s</td><td>' + r.lostVsBest.toFixed(0) + ' s</td>' +
         '<td>' + r.bobbleCost.toFixed(0) + ' s</td><td>' + (isFinite(r.avgW) ? Math.round(r.avgW) + ' W' : '—') + '</td>' +
-        '<td>' + (isFinite(r.avgHr) ? Math.round(r.avgHr) : '—') + '</td><td>' + Charts.esc(r.shape.kind || '—') + '</td></tr>').join('') +
+        '<td>' + (isFinite(r.avgHr) ? Math.round(r.avgHr) : '—') + '</td><td>' + (isFinite(r.metresPerBeat) ? r.metresPerBeat.toFixed(2) : '—') + '</td><td>' + Charts.esc(r.shape.kind || '—') + '</td></tr>').join('') +
       '</tbody></table>';
     renderCircuitGroups(rows);
   }

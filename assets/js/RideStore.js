@@ -56,6 +56,9 @@ const Settings = (() => {
     cxSectorCount: 10,     // columns in the lap × sector heatmap
     cxSuggest: true,       // propose dismount zones from the mean lap
     cxBobbleSeconds: 2.5,  // an unplanned stop has to cost at least this to be listed
+    // heart rate — most cross racers have a strap and no power meter
+    cxLthr: 170, cxMaxHr: 190,
+    cxLthrUserSet: false, cxMaxHrUserSet: false,
   };
 
   // Keys CrossLab's "Reset to defaults" is allowed to clear. Everything to do
@@ -64,6 +67,7 @@ const Settings = (() => {
   const RESETTABLE = [
     'mass', 'ftp', 'cp', 'wPrime', 'ftpUserSet', 'cpUserSet', 'wPrimeUserSet',
     'cxRunSpeed', 'cxStopSpeed', 'cxSectorCount', 'cxSuggest', 'cxBobbleSeconds',
+    'cxLthr', 'cxMaxHr', 'cxLthrUserSet', 'cxMaxHrUserSet',
   ];
 
   let cache = null;
@@ -339,6 +343,8 @@ const RideStore = (() => {
       croppedFrom: raw.t.length,
       ftp: raw.ftp || null, weightKg: raw.weightKg || null,
       cp: raw.cp || null, wPrime: raw.wPrime || null,
+      lthr: raw.lthr || null, maxHr: raw.maxHr || null, restHr: raw.restHr || null,
+      hrZones: Array.isArray(raw.hrZones) ? raw.hrZones : null,
       totals: raw.totals || {},
       hasPower: watts.some(x => x > 0),
       hasHr: !!hr && hr.some(x => x > 0),
@@ -384,6 +390,8 @@ const RideStore = (() => {
         temp: json.temp || null, lapTimes: json.lapTimes || [],
         ftp: json.ftp || null, weightKg: json.weightKg || null,
         cp: json.cp || null, wPrime: json.wPrime || null,
+        lthr: json.lthr || null, maxHr: json.maxHr || null, restHr: json.restHr || null,
+        hrZones: Array.isArray(json.hrZones) ? json.hrZones : null,
         totals: json.totals || {},
         startAnchor: json.startAnchor || null,
         features: Array.isArray(json.features) ? json.features : [],
@@ -418,6 +426,8 @@ const RideStore = (() => {
         type: json.type || 'Ride',
         ftp: json.icu_ftp || null, weight: json.icu_weight || null,
         cp: json.icu_pm_cp || null, wPrime: json.icu_pm_w_prime || null,
+        lthr: json.lthr || null, maxHr: json.athlete_max_hr || json.max_heartrate || null,
+        restHr: json.icu_resting_hr || null, hrZones: Array.isArray(json.icu_hr_zones) ? json.icu_hr_zones : null,
       },
       s
     );
@@ -489,6 +499,7 @@ const RideStore = (() => {
       't', 'lat', 'lon', 'alt', 'v', 'watts', 'hr', 'cad', 'dist', 'temp',
       'lapTimes', 'ftp', 'weightKg', 'cp', 'wPrime', 'totals', 'device', 'savedAt',
       'startAnchor', 'crop', 'features',
+      'lthr', 'maxHr', 'restHr', 'hrZones',
     ];
     const out = {};
     for (const k of keep) if (ride[k] !== undefined) out[k] = toPlain(ride[k]);
@@ -532,10 +543,19 @@ const RideStore = (() => {
       mass: pickNum(o.mass, s.mass),
       ftp, cp,
       wPrime: pickNum(o.wPrime, fromFile('wPrime', P.wPrime), s.wPrime),
+      // Heart rate: yours if you set it, else the file's, else unknown — the
+      // analyser then uses the race's own maximum and reports % of max rather
+      // than inventing a threshold.
+      lthr: pickNum(o.lthr, fromFile('cxLthr', P.lthr), s.cxLthrUserSet ? s.cxLthr : NaN),
+      maxHr: pickNum(o.maxHr, fromFile('cxMaxHr', P.maxHr), s.cxMaxHrUserSet ? s.cxMaxHr : NaN),
+      restHr: P.restHr || NaN,
+      hrZones: P.hrZones || null,
       fitnessSource: {
         ftp: s.ftpUserSet ? 'you' : (P.ftp ? 'file' : 'default'),
         cp: s.cpUserSet ? 'you' : (P.cp ? 'file' : 'default'),
         wPrime: s.wPrimeUserSet ? 'you' : (P.wPrime ? 'file' : 'default'),
+        lthr: s.cxLthrUserSet ? 'you' : (P.lthr ? 'file' : 'unknown'),
+        maxHr: s.cxMaxHrUserSet ? 'you' : (P.maxHr ? 'file' : 'race'),
       },
 
       startAnchor: o.startAnchor || null,

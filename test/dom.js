@@ -129,7 +129,7 @@ const G = name => window.eval(name);
   check('overview delta trace drew', $('ov-delta').getContext('2d').calls.stroke > 5);
 
   section('Tabs');
-  const tabs = ['course', 'features', 'laps', 'trace', 'power', 'replay', 'compare', 'overview'];
+  const tabs = ['course', 'features', 'laps', 'trace', 'effort', 'replay', 'compare', 'overview'];
   for (const t of tabs) {
     const before = errors.length;
     document.querySelector('#tabbar .tab[data-tab="' + t + '"]').click();
@@ -137,6 +137,11 @@ const G = name => window.eval(name);
     check('tab ' + t + ' renders without errors', errors.length === before, errors.slice(before).join(' | ').slice(0, 300));
   }
   check('course map drew', $('map-main').getContext('2d').calls.stroke > 20);
+  check('HR trace drew', $('hr-trace').getContext('2d').calls.stroke > 5);
+  check('effort tiles rendered', $('effort-stats').children.length >= 5, $('effort-stats').children.length + ' tiles');
+  check('feature HR table rendered', document.querySelectorAll('#hr-feature-table tbody tr').length === 3);
+  check('W′ card shown with power', $('wbal-card').style.display !== 'none');
+  check('no NaN on the effort tab', !/NaN/.test($('effort-stats').textContent + $('effort-table').textContent + $('hr-feature-table').textContent));
   check('heatmap drew', $('heatmap').getContext('2d').calls.fill > 20);
   check('feature bars drew', $('feature-bars').getContext('2d').calls.fill >= 3);
   check('feature table has three rows', document.querySelectorAll('#feature-table tbody tr').length === 3);
@@ -199,6 +204,13 @@ const G = name => window.eval(name);
   await sleep(250);
   check('suggestion accepted', document.querySelectorAll('#feature-list tbody tr').length === 1);
 
+  section('Map colouring');
+  for (const mode of ['hr', 'lost', 'speed']) {
+    document.querySelector('#map-color button[data-color="' + mode + '"]').click();
+    await sleep(80);
+    check('map coloured by ' + mode, ($('map-main')._clColorScale || {}).by === mode && /coloured by/.test($('map-title').textContent) && errors.length === 0, $('map-title').textContent);
+  }
+
   section('Map zoom and pan');
   const mapEl = $('map-main');
   const view = () => mapEl._clView || { k: 1, tx: 0, ty: 0 };
@@ -242,6 +254,11 @@ const G = name => window.eval(name);
   run.dispatchEvent(new window.Event('input', { bubbles: true }));
   await sleep(300);
   check('rail change re-analyses', G('Settings').get('cxRunSpeed') === 3);
+  const lthr = $('in-cxLthr');
+  lthr.value = '165';
+  lthr.dispatchEvent(new window.Event('input', { bubbles: true }));
+  await sleep(300);
+  check('threshold HR slider is yours once moved', G('Settings').get('cxLthrUserSet') === true && /yours/.test($('src-cxLthr').textContent), $('src-cxLthr').textContent);
   $('reset-settings').click();
   await sleep(300);
   check('reset restores defaults', G('Settings').get('cxRunSpeed') === 3.5);

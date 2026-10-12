@@ -38,8 +38,15 @@ two share settings, the intervals.icu key, and the raw ride format.
   riding between them.
 - **Race trimming** — finds the race inside a file that also holds the
   pre-ride, the grid and the cool-down lap.
-- **Power and HR**, if present — lap power, NP, W′ balance, riding power versus
-  power inside features. Neither is required; speed, GPS and cadence are the
+- **Heart rate first** — most cross racers have a strap and no power meter.
+  HR along the lap, one line per lap, so you can see where on the course the
+  heart peaks; what each feature does to it (rise, peak, settle); metres per
+  heartbeat per lap, the fitness proxy that needs no meter; first-half versus
+  second-half decoupling; on-foot versus riding HR; the start, and the minute
+  after the line. A dry strap is detected and its samples ignored rather than
+  averaged in. Threshold and max come from the activity or the rail.
+- **Power**, if present — lap power, NP, W′ balance, riding power versus
+  power inside features. Not required; speed, GPS, cadence and HR are the
   signals.
 - **Replay, same-course comparison, OpenStreetMap basemap, weather on the day**
   including rain in the 24 h before the start.
@@ -110,7 +117,7 @@ Both tools are served from the same origin, so browser storage is one bag.
 
 | key | where | what | shared |
 |---|---|---|---|
-| `cl-settings` | localStorage | preferences, rider numbers (`cx*` keys are CrossLab's) | yes |
+| `cl-settings` | localStorage | preferences, rider numbers (`cx*` keys are CrossLab's: thresholds, LTHR, max HR) | yes |
 | `cl-icu-key` | local/sessionStorage | the intervals.icu key, in its own slot | yes |
 | `cl-wx-*`, `cl-osm-*` | localStorage | weather and map caches | yes |
 | `crosslab` / `rides` | IndexedDB | raw rides with their features, keyed by `id` | no — same schema, own database |

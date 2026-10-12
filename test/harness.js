@@ -187,6 +187,71 @@ check('a suggestion lands on the barriers', A0.suggestions.some(s => Math.abs(s.
 check('a suggestion lands on the run-up and is typed as one', A0.suggestions.some(s => s.type === 'runup' && Math.abs(s.s - alongLap(T.zones.runup.entry)) < 30));
 check('with no features, every lap is riding time', A0.laps.every(r => r.featureSeconds === 0 && Math.abs(r.ridingSeconds - r.seconds) < 1e-9));
 
+// ── 3b. Heart rate ──────────────────────────────────────────────────────────
+
+section('Heart rate');
+
+{
+  const E = A.effort, H = A.hrQuality;
+  check('effort summary present with HR', !!E && isFinite(E.avgHr) && E.maxHrRace > E.avgHr, E && Math.round(E.avgHr) + ' avg, ' + E.maxHrRace + ' max');
+  check('clean strap: no dropouts in the race', H.spans.length === 0 && H.validShare > 0.99, H.spans.length + ' spans, share ' + H.validShare.toFixed(3));
+  check('every lap has HR and metres per beat', A.laps.every(r => isFinite(r.avgHr) && isFinite(r.metresPerBeat) && r.metresPerBeat > 0.5 && r.metresPerBeat < 5));
+  check('decoupling computed over all laps', E.hrLaps === T.laps && isFinite(E.decoupling), E.hrLaps + ' laps, ' + (E.decoupling * 100).toFixed(1) + '%');
+  check('fade with HR drifting up decouples', E.decoupling > 0.03 && E.hrDrift > 0, (E.decoupling * 100).toFixed(1) + '% · HR drift ' + E.hrDrift.toFixed(1));
+  const dismounts = A.features.filter(f => f.dismount);
+  check('dismount features lift HR', dismounts.every(f => f.hrN >= T.laps - 1 && f.medianHrRise > 0), dismounts.map(f => f.label + ' +' + f.medianHrRise.toFixed(1)).join(', '));
+  check('HR peaks at or after the exit, never inside the approach', dismounts.every(f => f.medianHrPeakLag >= -2));
+  check('the longer run lifts HR more than the hop', A.features.find(f => f.type === 'runup').medianHrRise > A.features.find(f => f.type === 'barriers').medianHrRise);
+  check('on foot costs more beats than riding', E.footHr > E.rideHr, Math.round(E.footHr) + ' vs ' + Math.round(E.rideHr));
+  check('HR along the lap is complete', E.hrAlong && Array.from(E.hrAlong).every(isFinite) && E.perLap.length === T.laps);
+  check('HR along the lap peaks near a feature', (() => {
+    let jm = 0; for (let j = 1; j < E.hrAlong.length; j++) if (E.hrAlong[j] > E.hrAlong[jm]) jm = j;
+    const s = jm * A.meanLap.step;
+    return A.features.some(f => s >= A.meanLap.s[f.j0] - 20 && s <= A.meanLap.s[f.j1] + 60);
+  })());
+  check('fade finding explains the heart', A.findings.some(f => f.kind === 'fade' && /Heart rate/.test(f.body)));
+  check('no start finding without a fast start', !A.findings.some(f => f.kind === 'hr-start') || E.start, '');
+  check('no dropout finding on a clean strap', !A.findings.some(f => f.kind === 'hr-dropout'));
+  check('threshold unknown stays unknown', !(A.cfg.lthr > 0) && !isFinite(E.lthr) && E.maxSource === 'race', 'maxHr ' + E.maxHr + ' from ' + E.maxSource);
+}
+
+// The common cross case: HR strap and cadence, no power meter.
+{
+  const rawHrOnly = { ...raw, watts: null };
+  const Ph = RideStore.prepare(rawHrOnly);
+  const Ah = Analyzer.run(Ph, RideStore.configFor(Ph, { features: raw.features }));
+  check('HR-only ride: effort present, power absent', !!Ah.effort && Ah.power === null && !Ph.hasPower);
+  check('HR-only ride: same decoupling as with power', Math.abs(Ah.effort.decoupling - A.effort.decoupling) < 1e-9);
+  check('HR-only ride: HR findings present', Ah.findings.some(f => /^hr-/.test(f.kind) || (f.kind === 'fade' && /Heart rate/.test(f.body))));
+}
+
+// A dry strap for the first seven minutes: flat 95 bpm while racing.
+{
+  const rawDry = { ...raw, hr: raw.hr.map((h, i) => (raw.t[i] < 420 ? 95 + (i % 3) : h)) };
+  const Pd = RideStore.prepare(rawDry);
+  const Ad = Analyzer.run(Pd, RideStore.configFor(Pd, { features: raw.features }));
+  const Hd = Ad.hrQuality;
+  check('dropout detected', Hd.spans.length >= 1 && Hd.invalidSeconds >= 300 && Hd.invalidSeconds <= 440, Hd.invalidSeconds + ' s invalid, spans ' + Hd.spans.map(x => x.t0 + '-' + x.t1).join(' '));
+  check('lap 1 has no HR, later laps do', !isFinite(Ad.laps[0].avgHr) && isFinite(Ad.laps[T.laps - 1].avgHr));
+  check('average HR ignores the dropout', Ad.effort.avgHr > A.effort.avgHr - 1, Math.round(Ad.effort.avgHr) + ' vs clean ' + Math.round(A.effort.avgHr));
+  check('dropout finding names the laps', Ad.findings.some(f => f.kind === 'hr-dropout' && /Lap 1/.test(f.body)), (Ad.findings.find(f => f.kind === 'hr-dropout') || {}).body);
+  check('no start analysis through a dropout', !Ad.effort.start);
+}
+
+// Rider numbers: a user-set threshold and max flow through.
+{
+  Settings.set({ cxLthr: 172, cxLthrUserSet: true, cxMaxHr: 200, cxMaxHrUserSet: true });
+  const cfgU = RideStore.configFor(P, { features: raw.features });
+  const Au = Analyzer.run(P, cfgU);
+  check('user-set LTHR and max are used', cfgU.lthr === 172 && cfgU.maxHr === 200 && cfgU.fitnessSource.lthr === 'you' && Au.effort.aboveLthr > 0 && Au.effort.maxSource === 'you');
+  Settings.set({ cxLthrUserSet: false, cxMaxHrUserSet: false });
+  const PF = RideStore.prepare({ ...raw, lthr: 168, maxHr: 195, hrZones: [120, 140, 155, 168, 180, 190, 210] });
+  const cfgF = RideStore.configFor(PF, { features: raw.features });
+  const Af = Analyzer.run(PF, cfgF);
+  check('file LTHR, max and zones are used', cfgF.lthr === 168 && cfgF.maxHr === 195 && Af.effort.zones && Af.effort.zones.length === 7 && Math.abs(Af.effort.zones.reduce((a, z) => a + z.seconds, 0) - Af.effort.validSeconds) < 1e-6);
+  check('HR rider numbers survive export', (() => { const st = RideStore.exportJson({ ...raw, lthr: 168, maxHr: 195, hrZones: [1, 2, 3] }); return st.lthr === 168 && st.maxHr === 195 && st.hrZones.length === 3; })());
+}
+
 // ── 4. No power meter ───────────────────────────────────────────────────────
 
 section('Without a power meter');

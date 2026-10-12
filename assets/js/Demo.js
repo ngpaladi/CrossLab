@@ -252,7 +252,9 @@ const Demo = (() => {
       prevSpeed = speed;
 
       // Heart rate chases load with a long time constant; drifts up with laps.
-      const hrTarget = 150 + 0.085 * Math.min(w, 500) + 1.6 * lap + (onFoot ? 12 : 0);
+      // Running with the bike is a bigger ask of the heart than the meter's
+      // zero suggests: charge it like a hard effort plus the shouldering.
+      const hrTarget = 150 + 0.085 * (onFoot ? 480 : Math.min(w, 500)) + 1.6 * lap + (onFoot ? 10 : 0);
       heart += (Math.min(190, hrTarget) - heart) / 22;
 
       t.push(elapsed);
