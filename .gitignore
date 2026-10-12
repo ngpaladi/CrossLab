@@ -8,3 +8,4 @@ node_modules/
 
 # Rendered chart output — regenerable via `node test/render.js`
 reference/render/
+CLAUDE.md
