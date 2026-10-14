@@ -162,8 +162,28 @@ async function bootPage(file) {
   check('getting started left no errors', errors.length === 0, errors.join(' | ').slice(0, 400));
 
   section('Sample race');
+  // A hanging Overpass mirror must cost the basemap, not the analysis: hold
+  // every map request open until the checks below have run.
+  const offline = window.fetch;
+  const heldMaps = [];
+  window.fetch = url => /overpass/.test(String(url))
+    ? new Promise((_, reject) => heldMaps.push(() => reject(new Error('network disabled'))))
+    : offline(url);
   $('demo-btn').click();
   await sleep(800);
+  check('analysis renders while the basemap is still loading', heldMaps.length > 0 && $('stat-row').children.length >= 6,
+    heldMaps.length + ' map requests held');
+  check('the busy overlay is down meanwhile', $('busy-overlay').hidden === true);
+  document.querySelector('#tabbar .tab[data-tab="course"]').click();
+  await sleep(100);
+  check('the course map says the basemap is loading', $('map-sub').classList.contains('is-loading')
+    && /loading basemap/.test($('map-sub').textContent), $('map-sub').textContent);
+  window.fetch = offline;
+  while (heldMaps.length) { heldMaps.shift()(); await sleep(20); }
+  await sleep(150);
+  check('and stops saying so once it gives up', !$('map-sub').classList.contains('is-loading'), $('map-sub').textContent);
+  document.querySelector('#tabbar .tab[data-tab="overview"]').click();
+  await sleep(100);
   check('no errors loading the sample', errors.length === 0, errors.join(' | ').slice(0, 400));
   check('stat tiles rendered', $('stat-row').children.length >= 6, $('stat-row').children.length + ' tiles');
   check('findings rendered', document.querySelectorAll('#findings .finding').length >= 4);

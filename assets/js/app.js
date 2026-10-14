@@ -189,8 +189,14 @@
 
     if (!entry.P) entry.P = RideStore.prepare(entry.raw);
     renderRaceList();
-    await Promise.all([ensureWeather(entry), ensureOsm(entry)]);
+    // Weather and the basemap only decorate the analysis: start both (each
+    // marks itself pending), draw now, and redraw as each arrives. Not awaited,
+    // so a slow Overpass mirror can't hold the page blank or the overlay up.
+    const loads = [ensureWeather(entry), ensureOsm(entry)];
     recompute();
+    for (const p of loads) {
+      p.then(fetched => { if (fetched && current() === entry && entry.A) renderAll(); });
+    }
   }
 
   function current() {
@@ -206,7 +212,7 @@
       return;
     }
     const mid = Math.floor(P.n / 2);
-    setBusy(true, 'Fetching weather…');
+    entry.wxPending = true;
     try {
       entry.wx = await Weather.fetchFor({
         lat: P.lat[mid], lon: P.lon[mid],
@@ -217,8 +223,9 @@
       entry.wx = null;
       entry.wxError = String(err.message || err);
     } finally {
-      setBusy(false);
+      entry.wxPending = false;
     }
+    return true;
   }
 
   async function ensureOsm(entry, { force = false } = {}) {
@@ -226,13 +233,17 @@
     if (!Settings.get('osmBasemap')) return;
     const P = entry.P;
     if (!P.hasGps) { entry.osmError = 'no GPS'; return; }
+    entry.osmPending = true;
     try {
       entry.osm = await Osm.fetchFor(Osm.boundsOf(P));
       entry.osmError = null;
     } catch (err) {
       entry.osm = null;
       entry.osmError = String(err.message || err);
+    } finally {
+      entry.osmPending = false;
     }
+    return true;
   }
 
   function basemap(entry) {
@@ -452,7 +463,7 @@
       out.innerHTML = '<div class="status status-warn">Not connected. <a href="' + connectUrl() + '">Connect intervals.icu</a> first.</div>';
       return;
     }
-    out.innerHTML = '<div class="status status-info">Fetching activities…</div>';
+    out.innerHTML = '<div class="status status-info status-loading">Fetching activities…</div>';
     try {
       const list = await Intervals.listActivities({
         key, athleteId: Settings.get('icuAthlete') || '0',
@@ -560,9 +571,10 @@
         '</span></span>';
       row.addEventListener('click', async () => {
         const note = document.createElement('div');
-        note.className = 'status status-info';
+        note.className = 'status status-info status-loading';
         note.textContent = 'Downloading streams…';
         out.replaceChildren(note);
+        setBusy(true, 'Downloading from intervals.icu…');
         try {
           await loadRaw(await Intervals.loadRide(a.id, key), { quiet: true });
           note.className = 'status status-ok';
@@ -570,6 +582,8 @@
         } catch (err) {
           note.className = 'status status-err';
           note.textContent = String(err.message || err);
+        } finally {
+          setBusy(false);
         }
       });
       out.appendChild(row);
@@ -586,14 +600,17 @@
     const id = parseActivityRef($('icu-id').value);
     const st = $('icu-id-status');
     const key = Settings.get('icuKey');
-    if (!key) { st.innerHTML = '<div class="status status-warn">Add an API key first.</div>'; return; }
+    if (!key) { st.innerHTML = '<div class="status status-warn">Not connected. <a href="' + connectUrl() + '">Connect intervals.icu</a> first.</div>'; return; }
     if (!id) { st.innerHTML = '<div class="status status-err">That does not look like an activity ID or URL.</div>'; return; }
-    st.innerHTML = '<div class="status status-info">Downloading…</div>';
+    st.innerHTML = '<div class="status status-info status-loading">Downloading…</div>';
+    setBusy(true, 'Downloading from intervals.icu…');
     try {
       await loadRaw(await Intervals.loadRide(id, key), { quiet: true });
       st.innerHTML = '<div class="status status-ok">Loaded.</div>';
     } catch (err) {
       st.innerHTML = '<div class="status status-err">' + Charts.esc(err.message || err) + '</div>';
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -833,12 +850,15 @@
     });
   }
 
+  // Counted, so a nested load (download → prepare) doesn't drop the overlay early.
+  let busyDepth = 0;
   function setBusy(on, msg) {
-    state.busy = on;
+    busyDepth = Math.max(0, busyDepth + (on ? 1 : -1));
+    state.busy = busyDepth > 0;
     const o = $('busy-overlay');
     if (!o) return;
-    o.hidden = !on;
-    if (msg) $('busy-msg').textContent = msg;
+    o.hidden = !state.busy;
+    if (on && msg) $('busy-msg').textContent = msg;
   }
 
   // ── Rendering ─────────────────────────────────────────────────────────────
@@ -955,6 +975,11 @@
     const entry = current();
     const el = $('wx-readout');
     if (!entry || !entry.P) { el.textContent = 'No race loaded.'; return; }
+    if (entry.wxPending) {
+      el.className = 'status status-info status-loading';
+      el.textContent = 'Fetching weather…';
+      return;
+    }
     if (!entry.wx) {
       el.className = 'status status-info';
       el.textContent = entry.wxError ? 'No weather: ' + entry.wxError
@@ -1200,10 +1225,12 @@
     lg += key('#fab219', 'unplanned stop (×)') + key(Charts.INK.text, 'start/finish', 'line');
     if (A.suggestions.length) lg += key(Charts.INK.surface2, '? suggested dismount zone');
     $('map-legend').innerHTML = lg;
-    $('map-sub').textContent = A.meanLap
+    $('map-sub').textContent = (A.meanLap
       ? 'median lap of ' + A.laps.length + ' · ' + (A.meanLap.lapLen / 1000).toFixed(2) + ' km' +
         (A.lapBounds[0].source === 'manual' ? ' · start line placed by you' : '')
-      : 'no laps found — the whole track is shown';
+      : 'no laps found — the whole track is shown') +
+      (entry.osmPending ? ' · loading basemap…' : '');
+    $('map-sub').classList.toggle('is-loading', !!entry.osmPending);
 
     renderFeatureList(entry, A);
     renderSuggestions(entry, A);
