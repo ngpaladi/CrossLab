@@ -62,11 +62,85 @@
     }
 
     renderRaceList();
+    renderIcuConnection();
     if (state.races.length) {
       await select(state.races[0].id);
     } else {
       renderEmpty();
     }
+    gettingStarted();
+  }
+
+  // ── Getting started ───────────────────────────────────────────────────────
+
+  function connectUrl() { return $('icu-connect-cta').getAttribute('href'); }
+
+  /** The sidebar shows a Connect button until there is a key, then the ride browser. */
+  function renderIcuConnection() {
+    const on = !!Settings.get('icuKey');
+    $('icu-connect').style.display = on ? 'none' : '';
+    $('icu-panel').style.display = on ? '' : 'none';
+    const name = Settings.get('icuAthleteName');
+    $('icu-who').innerHTML = on
+      ? 'Connected' + (name ? ' as ' + Charts.esc(name) : '') + ' · <a href="' + connectUrl() + '">change</a>'
+      : '';
+  }
+
+  /**
+   * First visit: a welcome dialog if intervals.icu isn't connected, then the
+   * walkthrough. Each is shown once (cxWelcomeSeen, cxTourDone); ?tour=1 from
+   * the settings drawer replays the walkthrough.
+   */
+  function gettingStarted() {
+    const replay = /[?&]tour=1\b/.test(location.search);
+    if (replay) history.replaceState(null, '', location.pathname);
+    if (!replay && Settings.get('cxTourDone')) return;
+    if (!replay && !Settings.get('icuKey') && !Settings.get('cxWelcomeSeen')) welcome();
+    else walkthrough();
+  }
+
+  function welcome() {
+    Settings.set({ cxWelcomeSeen: true });
+    Tour.dialog({
+      title: 'Welcome to CrossLab',
+      body:
+        '<p>CrossLab lines up every lap of a cyclocross race against a clean median lap and ' +
+        'shows where the time went &mdash; which barriers, which run-up, which sand pit.</p>' +
+        '<p>Connect intervals.icu to load races straight from your account. Or skip it: you ' +
+        'can drop in a .fit file, or try the sample race, without connecting anything.</p>',
+      actions: [
+        { label: 'Connect intervals.icu', primary: true, href: connectUrl(), id: 'welcome-connect' },
+        { label: 'Not now', id: 'welcome-later', onClick: walkthrough },
+      ],
+      onDismiss: () => Settings.set({ cxTourDone: true }),
+    });
+  }
+
+  function walkthrough() {
+    const on = !!Settings.get('icuKey');
+    Tour.start([
+      // Only laid out on a phone, where the sidebar and rail are separate screens.
+      { el: '.mobile-nav', title: 'Three screens',
+        body: '<b>Races</b> is where you load one, from a file, intervals.icu or the sample. ' +
+              '<b>Analysis</b> is the race itself; <b>Setup</b> holds the rider numbers.' },
+      { el: '#dropzone', title: 'Load a race',
+        body: 'Drop a <b>.fit</b> file from your head unit here, or a .json exported from CrossLab or CritLab. ' +
+              'Races stay in this browser.' },
+      on
+        ? { el: '#icu-panel', title: 'Your intervals.icu rides',
+            body: 'Pick a date range and <b>Find rides</b>, or <b>Season</b> for the whole cross season. ' +
+                  'Races that look like cross are flagged.' }
+        : { el: '#icu-connect', title: 'intervals.icu',
+            body: 'Connect once and your races are a click away here. CritLab shares the connection.' },
+      { el: '#demo-btn', title: 'Nothing to hand?',
+        body: 'The sample race has fumbled remounts, a bog in the sand and a fade planted in it, so you ' +
+              'can see what CrossLab picks up.' },
+      { el: '#tabbar', title: 'Where the time went',
+        body: '<b>Overview</b> ranks the losses. Start on <b>Course</b>: mark the barriers, run-ups and sand ' +
+              'on the map and every other tab gets sharper. <b>Heart rate</b> works without a power meter.' },
+      { el: '#settings-btn', title: 'Settings',
+        body: 'Threshold and max heart rate, how you record, map and weather, and this tour again.' },
+    ], { onEnd: () => Settings.set({ cxTourDone: true }) });
   }
 
   // ── Race lifecycle ────────────────────────────────────────────────────────
@@ -332,7 +406,6 @@
     fi.addEventListener('change', () => { handleFiles(fi.files); fi.value = ''; });
 
     $('demo-btn').addEventListener('click', () => loadRaw(Demo.build()));
-    $('icu-open-settings').addEventListener('click', () => window.dispatchEvent(new CustomEvent('crosslab:open-settings')));
     $('icu-fetch').addEventListener('click', fetchIcuList);
     $('icu-range-90').addEventListener('click', () => { initDates(90); fetchIcuList(); });
     $('icu-range-season').addEventListener('click', () => {
@@ -376,7 +449,7 @@
     const key = Settings.get('icuKey');
     const out = $('icu-results');
     if (!key) {
-      out.innerHTML = '<div class="status status-warn">Add an intervals.icu API key first (the Key button above).</div>';
+      out.innerHTML = '<div class="status status-warn">Not connected. <a href="' + connectUrl() + '">Connect intervals.icu</a> first.</div>';
       return;
     }
     out.innerHTML = '<div class="status status-info">Fetching activities…</div>';
@@ -753,6 +826,7 @@
     window.addEventListener('resize', () => { clearTimeout(t); t = setTimeout(renderActivePanel, 120); });
     window.addEventListener('crosslab:settings', async e => {
       const d = e.detail || {};
+      if (d.icu) renderIcuConnection();
       if (d.cleared) { state.races = []; state.currentId = null; renderRaceList(); renderEmpty(); return; }
       if (d.osm) { const entry = current(); if (entry) { entry.osm = null; entry.osmError = null; await ensureOsm(entry); } }
       recompute();

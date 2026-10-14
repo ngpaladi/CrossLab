@@ -94,6 +94,7 @@ assets/js/
   Charts.js      — canvas charts with hover, OKLab ramps
   RideStore.js   — normalisation to a 1 Hz grid, IndexedDB, shared Settings
   Demo.js        — the synthetic sample race (and test fixture)
+  Tour.js        — welcome dialog and walkthrough (shared with CritLab)
   app.js         — UI state, the feature picker, rendering
 index.html       — the analyser
 about.html       — what it computes, and what it assumes

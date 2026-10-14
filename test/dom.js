@@ -34,6 +34,7 @@ try {
   execFileSync('jekyll', ['build', '--destination', SITE], { cwd: ROOT, stdio: 'pipe' });
   check('site builds', fs.existsSync(path.join(SITE, 'index.html')));
   check('about page builds', fs.existsSync(path.join(SITE, 'about.html')));
+  check('connect page builds', fs.existsSync(path.join(SITE, 'connect.html')));
 } catch (err) {
   check('site builds', false, String(err.stderr || err.message).slice(0, 300));
   process.exit(1);
@@ -108,6 +109,23 @@ const $ = id => document.getElementById(id);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const G = name => window.eval(name);
 
+/** Boot another built page in its own jsdom, network off, errors collected. */
+async function bootPage(file) {
+  const errs = [];
+  const vc = new VirtualConsole();
+  vc.on('jsdomError', e => errs.push(e.message));
+  vc.on('error', (...a) => errs.push(a.map(String).join(' ')));
+  const src = fs.readFileSync(path.join(SITE, file), 'utf8').replace(/(src|href)="\/CrossLab\//g, '$1="');
+  const page = new JSDOM(src, {
+    runScripts: 'dangerously', resources: 'usable', virtualConsole: vc,
+    url: require('url').pathToFileURL(path.join(SITE, file)).href,
+    beforeParse(w) { w.fetch = () => Promise.reject(new Error('network disabled')); },
+  });
+  await new Promise(r => page.window.document.readyState === 'complete' ? r() : page.window.addEventListener('load', r));
+  await sleep(100);
+  return { window: page.window, document: page.window.document, errors: errs };
+}
+
 (async () => {
   await new Promise(resolve => {
     if (document.readyState === 'complete') resolve();
@@ -118,6 +136,30 @@ const G = name => window.eval(name);
   check('no errors on boot', errors.length === 0, errors.join(' | ').slice(0, 400));
   check('modules present', ['Fit', 'Intervals', 'Physics', 'Analyzer', 'Charts', 'RideStore', 'Settings', 'Demo'].every(n => { try { return !!G(n); } catch (_) { return false; } }));
   check('empty state rendered', /Load a race/.test($('findings').textContent));
+
+  section('Getting started');
+  const dlg = document.querySelector('.tour-dialog');
+  check('welcome dialog shown when intervals.icu is not connected', !!dlg && /Welcome to CrossLab/.test(dlg.textContent));
+  check('sidebar offers Connect instead of the ride browser',
+    $('icu-connect').style.display !== 'none' && $('icu-panel').style.display === 'none');
+  check('welcome links to the connect page', /connect\.html$/.test($('welcome-connect').getAttribute('href')));
+  $('welcome-later').click();
+  const count = () => document.querySelector('.tour-count').textContent;
+  check('Not now starts the walkthrough', !document.querySelector('.tour-dialog') && /^1 of \d/.test(count()), count());
+  // jsdom lays everything out, so the phone-only step comes first here.
+  check('first step points at the phone nav', document.querySelector('.mobile-nav').classList.contains('tour-target'));
+  $('tour-next').click();
+  check('then the dropzone', $('dropzone').classList.contains('tour-target'));
+  $('tour-next').click();
+  check('Next moves to the Connect button', /^3 of/.test(count()) && $('icu-connect').classList.contains('tour-target')
+    && !$('dropzone').classList.contains('tour-target'));
+  $('tour-back').click();
+  check('Back goes back', /^2 of/.test(count()));
+  check('not marked done while running', !G('Settings').get('cxTourDone'));
+  $('tour-skip').click();
+  check('Skip closes it', !document.querySelector('.tour-layer') && !document.querySelector('.tour-target'));
+  check('skipping marks the tour done', G('Settings').get('cxTourDone') === true);
+  check('getting started left no errors', errors.length === 0, errors.join(' | ').slice(0, 400));
 
   section('Sample race');
   $('demo-btn').click();
@@ -285,8 +327,48 @@ const G = name => window.eval(name);
   section('Settings drawer');
   $('settings-btn').click();
   check('drawer opens', $('settings-modal').style.display !== 'none');
+  check('drawer says not connected', /Not connected/.test($('icu-state').textContent));
+  check('drawer links to the connect page', /connect\.html$/.test($('icu-connect-link').getAttribute('href')));
   $('settings-close').click();
   check('drawer closes', $('settings-modal').style.display === 'none');
+
+  G('Settings').set({ icuKey: 'k', icuAthleteName: 'Test Rider' });
+  window.dispatchEvent(new window.CustomEvent('crosslab:settings', { detail: { icu: true } }));
+  await sleep(100);
+  check('with a key the sidebar shows the ride browser',
+    $('icu-panel').style.display !== 'none' && $('icu-connect').style.display === 'none' && /Test Rider/.test($('icu-who').textContent));
+  $('settings-btn').click();
+  $('icu-clear').click();
+  await sleep(100);
+  check('Disconnect forgets the key and brings Connect back',
+    !G('Settings').get('icuKey') && $('icu-connect').style.display !== 'none' && /Not connected/.test($('icu-state').textContent));
+  $('settings-close').click();
+
+  section('Connect page');
+  {
+    const cn = await bootPage('connect.html');
+    const c$ = id => cn.document.getElementById(id);
+    check('connect page shows the steps when not connected', c$('cn-steps').style.display !== 'none' && c$('cn-back').style.display === 'none');
+    check('API key field is a password field', c$('cn-key').type === 'password');
+    check('step 1 opens intervals.icu settings', c$('cn-open').getAttribute('href') === 'https://intervals.icu/settings');
+    c$('cn-connect').click();
+    check('connecting with no key asks for one', c$('cn-status').className.includes('status-err'));
+    c$('cn-key').value = 'not-a-real-key';
+    c$('cn-connect').click();
+    await sleep(300);
+    check('a failing key reports an error', c$('cn-status').className.includes('status-err'), c$('cn-status').textContent.slice(0, 80));
+    cn.window.eval("Intervals.testKey = async () => ({ id: 1, name: 'Test Rider', ftp: 250, weight: 70 })");
+    c$('cn-connect').click();
+    await sleep(50);
+    const S = cn.window.eval('Settings');
+    check('a good key is saved', S.get('icuKey') === 'not-a-real-key' && S.get('icuAthleteName') === 'Test Rider');
+    check('and the page says who is connected', /Test Rider/.test(c$('cn-connected').textContent)
+      && c$('cn-steps').style.display === 'none' && c$('cn-back').style.display !== 'none');
+    c$('cn-forget').click();
+    check('Disconnect forgets the key', !S.get('icuKey') && c$('cn-steps').style.display !== 'none');
+    check('connect page has no errors', cn.errors.length === 0, cn.errors.join(' | ').slice(0, 300));
+    cn.window.close();
+  }
 
   check('no errors at the end', errors.length === 0, errors.join(' | ').slice(0, 400));
 
