@@ -788,6 +788,11 @@ table.data td.dim { color: var(--text-muted); }
 /* ── CrossLab additions ─────────────────────────────────────────────────── */
 
 .site-nav a.sibling { opacity: .75; }
+/* Two sibling links don't fit beside the title on a phone; About links them too. */
+@media (max-width: 600px) {
+  .site-header { gap: 10px; padding: 0 12px; }
+  .site-nav a.sibling { display: none; }
+}
 
 .finding { display: flex; gap: 10px; margin-bottom: 12px; align-items: flex-start; }
 .finding-mark { width: 4px; align-self: stretch; border-radius: 2px; flex-shrink: 0; margin-top: 3px; }
